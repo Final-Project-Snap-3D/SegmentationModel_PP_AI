@@ -9,6 +9,7 @@ vizwiz_salient/
 │   ├── test/            # Test images (.jpg)
 │   └── annotations/     # JSON annotation files
 │       ├── train.json
+|       ├── test.json
 │       └── val.json
 ├── dataset.py
 ├── requirements.txt
