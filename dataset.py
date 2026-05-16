@@ -10,12 +10,14 @@ from torch.utils.data import Dataset
 class VizWiz(Dataset):
     # He afegit el paràmetre transform per poder convertir imatge i màscara a tensors des de fora
     def __init__(self, images_dir, annotations_path, transform=None):
-        self.img_names = os.listdir(images_dir)
-        self.images_dir = images_dir
-        self.transform = transform 
-
         with open(annotations_path, 'r') as f:
             self.annotations = json.load(f)
+
+        # Només les imatges que tenen anotació
+        self.img_names = [n for n in os.listdir(images_dir) if n in self.annotations]
+        self.images_dir = images_dir
+        self.annotations_path = annotations_path
+        self.transform = transform
 
     def __len__(self):
         return len(self.img_names)
@@ -34,6 +36,9 @@ class VizWiz(Dataset):
         #Get mask
         annotation = self.annotations[img_name]
         height, width = annotation['Ground Truth Dimensions']
+
+        # Redimensiona la imatge per coincidir amb les dimensions de l'anotació
+        image = image.resize((width, height), Image.BILINEAR)
 
         mask = np.zeros((height, width), dtype=np.uint8)
         salient_object = annotation['Salient Object']
