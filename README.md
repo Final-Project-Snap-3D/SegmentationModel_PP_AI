@@ -62,7 +62,7 @@ train_ds = VizWiz(..., transform=aug.train())
 val_ds   = VizWiz(..., transform=aug.val())
 ```
 
-## Model (a emplenar)
+## Model (encara per fer)
 
 `model.py` defineix una arquitectura UNet en 3 classes:
 
