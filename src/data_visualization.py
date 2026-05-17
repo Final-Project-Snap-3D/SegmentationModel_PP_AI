@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 import torch
 from torch.utils.data import DataLoader
 from dataset import VizWiz
-from augmentations import DataAugmentation, IMAGENET_MEAN, IMAGENET_STD
+from augmentation import DataAugmentation, IMAGENET_MEAN, IMAGENET_STD
 
 # --- setup ---
 dataset = VizWiz(
