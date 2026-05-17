@@ -1,6 +1,10 @@
+# SEGMENTATION PIPELINE
+## Dataset
+Dataset can be downloaded here: https://vizwiz.org/tasks-and-datasets/salient-object-detection/
+
+## Structure
 Folder structure should be as follows for the code and dataset for the moment (when project grows separate .py files into according folders (data, src...)
 
-Dataset can be downloaded here: https://vizwiz.org/tasks-and-datasets/salient-object-detection/
 ```
 vizwiz_salient/
 ├── data/                # Dataset goes here (not tracked by git)
