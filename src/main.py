@@ -43,7 +43,7 @@ def main():
     val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False)
     
     model = SegmentationModel().to(device)
-    criterion = torch.nn.BCEWithLogitsLoss() # Cross-entropy al final? 
+    criterion = torch.nn.BCEWithLogitsLoss() # Més endavant hauríem de fer BCEWithLogitsLoss amb Dice si les segmentacions no són òptimes en resultats (molt background per exemple)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr) # Adam o Adam W, y palante 
 
     train_loss_history = []
