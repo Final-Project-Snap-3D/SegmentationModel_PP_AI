@@ -62,15 +62,13 @@ train_ds = VizWiz(..., transform=aug.train())
 val_ds   = VizWiz(..., transform=aug.val())
 ```
 
-## Model (encara per fer)
+## Model 
 
-`model.py` defineix una arquitectura UNet en 3 classes:
-
-- **`Encoder (Downsampling)`**: ...
-- **`Decoder (Upsampling)`**: ...
-- **`SegmentationModel`**: combina encoder i decoder. Sortida: logits per píxel.
+Implementat a `model.py`amb la classe SegmentationModel, seguint la guia del lab de UNet. Adaptat algunes coses (padding, eliminar center cropping...). Batch Normalization afegida també entre capa convolucional i ReLU ja que recomanat quan s'entrena desde zero.
 
 ## Entrenament
+
+Afegits els loops d'entrenament i validació, generant les gràfiques de loss per ambdues.
 
 Execució bàsica:
 
