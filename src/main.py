@@ -1,12 +1,15 @@
 import argparse
+from pathlib import Path
 
-import matplotlib.pyplot as plt
 import torch
 from torch.utils.data import DataLoader
 
 from dataset import VizWiz
 from model import SegmentationModel
 from augmentation import DataAugmentation
+from wandb_logger import WandbLogger
+from utils import TaskType
+
 
 # Proposta de main com la sessio1 del lab de MLOps, es pot modificar
 def main():
@@ -25,72 +28,94 @@ def main():
     parser.add_argument("--val_images_dir", help="ruta imatges val", type=str, default="data/val")
     parser.add_argument("--train_annotations", help="ruta JSON train", type=str, default="data/annotations/train.json")
     parser.add_argument("--val_annotations", help="ruta JSON val", type=str, default="data/annotations/val.json")
-    
+    # Checkpoints
+    parser.add_argument("--checkpoint_dir", help="ruta per guardar checkpoints", type=str, default="checkpoints")
+
     args = parser.parse_args()
 
+    # Device
     if torch.cuda.is_available():
         device = torch.device("cuda")
     elif torch.backends.mps.is_available():
         device = torch.device("mps")
     else:
         device = torch.device("cpu")
+    print(f"Using device: {device}")
 
+    # Data loading
     aug = DataAugmentation(img_size=args.image_size)
-    dataset = VizWiz(args.train_images_dir, args.train_annotations, transform=aug.train())
-    dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, drop_last=True)
-
-    val_dataset = VizWiz(args.val_images_dir, args.val_annotations, transform=aug.val())
-    val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False)
+    train_dataset = VizWiz(args.train_images_dir, args.train_annotations, transform=aug.train())
+    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, drop_last=True)
     
+    val_dataset = VizWiz(args.val_images_dir, args.val_annotations, transform=aug.val())
+    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False)
+    
+    print(f"Train samples: {len(train_dataset)} | Val samples: {len(val_dataset)}")
+
+    # Model, loss, optimizer
     model = SegmentationModel().to(device)
     criterion = torch.nn.BCEWithLogitsLoss() # Més endavant hauríem de fer BCEWithLogitsLoss amb Dice si les segmentacions no són òptimes en resultats (molt background per exemple)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr) # Adam o Adam W, y palante 
 
-    train_loss_history = []
-    val_loss_history = []
+    # Logger
+    checkpoint_dir = Path(args.checkpoint_dir)
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    
+    logger = WandbLogger(task=TaskType.SEGMENTATION, model=model)
+
+    # Training loop
+    print("\nStarting training...\n")
+    best_val_loss = float('inf')
 
     for epoch in range(args.epochs):
+        # Train
         model.train()
-        epoch_loss = 0.0
-        n_batches = 0
-        for x, y in dataloader:
+        train_loss = 0.0
+        for x, y in train_loader:
             x, y = x.to(device), y.to(device)
             optimizer.zero_grad()
-            
-            y_ = model(x)
-            
-            loss = criterion(y_, y.float().unsqueeze(1))
+            y_pred = model(x)
+            loss = criterion(y_pred, y.float().unsqueeze(1))
             loss.backward()
             optimizer.step()
-            
-            epoch_loss += loss.item()
-            n_batches += 1
-
-        avg_loss = epoch_loss / n_batches
-        train_loss_history.append(avg_loss)
+            train_loss += loss.item()
         
+        train_loss /= len(train_loader)
+        
+        # Validate
+        model.eval()
+        val_loss = 0.0
         with torch.no_grad():
-            model.eval()
-            val_loss = 0.0
-            n_val_batches = 0
-            for x_val, y_val in val_dataloader:
-                x_val, y_val = x_val.to(device), y_val.to(device)
-                y_val_ = model(x_val)
-                loss_val = criterion(y_val_, y_val.float().unsqueeze(1))
-                val_loss += loss_val.item()
-                n_val_batches += 1
+            for x, y in val_loader:
+                x, y = x.to(device), y.to(device)
+                y_pred = model(x)
+                loss = criterion(y_pred, y.float().unsqueeze(1))
+                val_loss += loss.item()
+        
+        val_loss /= len(val_loader)
+        
+        # Log
+        print(f"Epoch {epoch+1}/{args.epochs} | Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f}")
+        logger.log_metrics({
+            'train_loss': train_loss,
+            'val_loss': val_loss,
+        }, step=epoch+1)
+        
+        # Save best model
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            best_model_path = checkpoint_dir / "best_model.pt"
+            logger.save_checkpoint(str(best_model_path))
+            print(f"  ✓ Best model saved (val_loss: {val_loss:.4f})")
+    
+    # Save final model
+    final_model_path = checkpoint_dir / "final_model.pt"
+    logger.save_checkpoint(str(final_model_path))
+    print(f"\n✓ Training completed!")
+    print(f"  Checkpoints saved to: {checkpoint_dir}")
+    
+    logger.finish()
 
-        avg_val_loss = val_loss / n_val_batches
-        val_loss_history.append(avg_val_loss)
-        print(f"Epoch {epoch+1}/{args.epochs} - Avg Loss: {avg_loss:.4f} - Avg Val Loss: {avg_val_loss:.4f}")
-
-    plt.plot(train_loss_history, label="Training Loss")
-    plt.plot(val_loss_history, label="Validation Loss")
-    plt.title("Training and Validation Loss")
-    plt.xlabel("Epoch")
-    plt.ylabel("Loss")
-    plt.legend()
-    plt.show()
 
 if __name__ == "__main__":
     main()
