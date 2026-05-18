@@ -37,15 +37,20 @@ def main():
 
     aug = DataAugmentation(img_size=args.image_size)
     dataset = VizWiz(args.train_images_dir, args.train_annotations, transform=aug.train())
-    dataloader = DataLoader(dataset, batch_size=args.batch_size)
+    dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, drop_last=True)
+
+    val_dataset = VizWiz(args.val_images_dir, args.val_annotations, transform=aug.val())
+    val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False)
     
     model = SegmentationModel().to(device)
-    criterion = ... # Cross-entropy al final? 
-    optimizer = ... # Adam o Adam W, y palante 
+    criterion = torch.nn.BCEWithLogitsLoss() # Cross-entropy al final? 
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr) # Adam o Adam W, y palante 
 
-    loss_history = []
+    train_loss_history = []
+    val_loss_history = []
 
     for epoch in range(args.epochs):
+        model.train()
         epoch_loss = 0.0
         n_batches = 0
         for x, y in dataloader:
@@ -54,22 +59,37 @@ def main():
             
             y_ = model(x)
             
-            loss = criterion(y_, y)
+            loss = criterion(y_, y.float().unsqueeze(1))
             loss.backward()
             optimizer.step()
             
-            loss_history.append(loss.item())
             epoch_loss += loss.item()
             n_batches += 1
 
         avg_loss = epoch_loss / n_batches
+        train_loss_history.append(avg_loss)
         
-        print(f"Epoch {epoch+1}/{args.epochs} - Avg Loss: {avg_loss:.4f}")
+        with torch.no_grad():
+            model.eval()
+            val_loss = 0.0
+            n_val_batches = 0
+            for x_val, y_val in val_dataloader:
+                x_val, y_val = x_val.to(device), y_val.to(device)
+                y_val_ = model(x_val)
+                loss_val = criterion(y_val_, y_val.float().unsqueeze(1))
+                val_loss += loss_val.item()
+                n_val_batches += 1
 
-    plt.plot(loss_history)
-    plt.title("Training loss")
-    plt.xlabel("Step")
+        avg_val_loss = val_loss / n_val_batches
+        val_loss_history.append(avg_val_loss)
+        print(f"Epoch {epoch+1}/{args.epochs} - Avg Loss: {avg_loss:.4f} - Avg Val Loss: {avg_val_loss:.4f}")
+
+    plt.plot(train_loss_history, label="Training Loss")
+    plt.plot(val_loss_history, label="Validation Loss")
+    plt.title("Training and Validation Loss")
+    plt.xlabel("Epoch")
     plt.ylabel("Loss")
+    plt.legend()
     plt.show()
 
 if __name__ == "__main__":
