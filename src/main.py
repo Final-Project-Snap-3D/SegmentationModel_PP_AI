@@ -26,8 +26,8 @@ def main():
     parser.add_argument("--image_size", help="mida de les imatges per fer el resize", type=int, default=512) # FYI: el SAM2 es 1024/si cal podriem baixar mes
     parser.add_argument("--train_images_dir", help="ruta imatges train", type=str, default="data/train")
     parser.add_argument("--val_images_dir", help="ruta imatges val", type=str, default="data/val")
-    parser.add_argument("--train_annotations", help="ruta JSON train", type=str, default="data/annotations/train.json")
-    parser.add_argument("--val_annotations", help="ruta JSON val", type=str, default="data/annotations/val.json")
+    parser.add_argument("--train_annotations", help="ruta JSON train", type=str, default="data/annotations/VizWiz_SOD_train_challenge.json")
+    parser.add_argument("--val_annotations", help="ruta JSON val", type=str, default="data/annotations/VizWiz_SOD_val_challenge.json")
     # Checkpoints
     parser.add_argument("--checkpoint_dir", help="ruta per guardar checkpoints", type=str, default="checkpoints")
 
@@ -71,7 +71,9 @@ def main():
         # Train
         model.train()
         train_loss = 0.0
-        for x, y in train_loader:
+        for i, (x, y) in enumerate(train_loader, 1):
+            if i % 10 == 0:
+                print(f"  Batch {i}/{len(train_loader)}")
             x, y = x.to(device), y.to(device)
             optimizer.zero_grad()
             y_pred = model(x)
