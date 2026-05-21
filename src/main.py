@@ -66,13 +66,14 @@ def main():
     # Training loop
     print("\nStarting training...\n")
     best_val_loss = float('inf')
+    eps = 1e-7
 
     for epoch in range(args.epochs):
         # Train
         model.train()
         train_loss = 0.0
         for i, (x, y) in enumerate(train_loader, 1):
-            if i % 10 == 0:
+            if i % 500 == 0:
                 print(f"  Batch {i}/{len(train_loader)}")
             x, y = x.to(device), y.to(device)
             optimizer.zero_grad()
@@ -87,21 +88,62 @@ def main():
         # Validate
         model.eval()
         val_loss = 0.0
+        val_iou_sum = 0.0
+        val_dice_sum = 0.0
+        val_samples = 0
+        sample_images = None
+        sample_masks = None
         with torch.no_grad():
             for x, y in val_loader:
                 x, y = x.to(device), y.to(device)
                 y_pred = model(x)
-                loss = criterion(y_pred, y.float().unsqueeze(1))
+                y_true = y.float().unsqueeze(1)
+                loss = criterion(y_pred, y_true)
                 val_loss += loss.item()
-        
+
+                y_prob = torch.sigmoid(y_pred)
+                y_hat = (y_prob > 0.5).float()
+
+                intersection = (y_hat * y_true).sum(dim=(1, 2, 3))
+                union = y_hat.sum(dim=(1, 2, 3)) + y_true.sum(dim=(1, 2, 3)) - intersection
+
+                iou = (intersection + eps) / (union + eps)
+                dice = (2 * intersection + eps) / (y_hat.sum(dim=(1, 2, 3)) + y_true.sum(dim=(1, 2, 3)) + eps)
+
+                val_iou_sum += iou.sum().item()
+                val_dice_sum += dice.sum().item()
+                val_samples += x.size(0)
+
+                if sample_images is None:
+                    sample_images = x[:3].cpu()
+                    sample_masks = y_hat[:3].cpu()
+
         val_loss /= len(val_loader)
+        val_iou = val_iou_sum / val_samples
+        val_dice = val_dice_sum / val_samples
         
         # Log
-        print(f"Epoch {epoch+1}/{args.epochs} | Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f}")
+        print(
+            f"Epoch {epoch+1}/{args.epochs} | "
+            f"Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} | "
+            f"Val IoU: {val_iou:.4f} | Val Dice: {val_dice:.4f}"
+        )
         logger.log_metrics({
             'train_loss': train_loss,
             'val_loss': val_loss,
+            'val_iou': val_iou,
+            'val_dice': val_dice,
         }, step=epoch+1)
+
+        if (epoch + 1) % 5 == 0 and sample_images is not None and sample_masks is not None:
+            logger.log_image_mask_artifacts(
+                images=sample_images,
+                masks=sample_masks,
+                epoch=epoch + 1,
+                base_dir=str(checkpoint_dir),
+                max_items=3,
+            )
+            print("  ✓ Logged 3 validation image/mask artifacts")
         
         # Save best model
         if val_loss < best_val_loss:
@@ -116,6 +158,7 @@ def main():
     print(f"\n✓ Training completed!")
     print(f"  Checkpoints saved to: {checkpoint_dir}")
     
+    logger.log_model(str(best_model_path), name="best_model")
     logger.finish()
 
 
