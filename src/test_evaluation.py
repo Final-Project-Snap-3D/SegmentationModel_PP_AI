@@ -40,7 +40,6 @@ def run_evaluation(model_path, images_dir, annotations, image_size=512,
     if output_dir is not None:
         os.makedirs(output_dir, exist_ok=True)
 
-    # Resize + normalize (igual que a val del main.py)
     aug = DataAugmentation(img_size=image_size)
     dataset = VizWiz(images_dir, annotations, transform=aug.val_test())
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False)

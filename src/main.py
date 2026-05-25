@@ -31,7 +31,7 @@ def main():
     parser.add_argument("--val_annotations", help="ruta JSON val", type=str, default="data/annotations/VizWiz_SOD_val_challenge.json")
     # Test
     parser.add_argument("--test_images_dir", help="ruta imatges test", type=str, default="data/test")
-    parser.add_argument("--test_annotations", help="ruta JSON test", type=str, default="data/annotations/test.json")
+    parser.add_argument("--test_annotations", help="ruta JSON test", type=str, default="data/annotations/VizWiz_SOD_test_challenge.json")
     # Checkpoints
     parser.add_argument("--checkpoint_dir", help="ruta per guardar checkpoints", type=str, default="checkpoints")
 
@@ -173,7 +173,7 @@ def main():
     logger.finish()
 
     # Test evaluation with best model
-    """if best_model_path.exists() and Path(args.test_images_dir).exists():
+    if best_model_path.exists() and Path(args.test_images_dir).exists():
         print(f"\nRunning test evaluation with best model: {best_model_path}")
         test_metrics = run_evaluation(
             model_path=str(best_model_path),
@@ -182,10 +182,11 @@ def main():
             image_size=args.image_size,
             batch_size=args.batch_size,
         )
-        print("\n=== Test Evaluation Results ===")
-        for k, v in test_metrics.items():
-            print(f"  {k.upper():12s}: {v:.4f}")
-        print("================================\n")"""
+        if test_metrics is not None:
+            print("\n=== Test Evaluation Results ===")
+            for k, v in test_metrics.items():
+                print(f"  {k.upper():12s}: {v:.4f}")
+            print("================================\n")
 
 if __name__ == "__main__":
     main()
