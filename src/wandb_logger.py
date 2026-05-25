@@ -6,6 +6,8 @@ from utils import TaskType
 from pathlib import Path
 import numpy as np
 from PIL import Image
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 
@@ -91,7 +93,10 @@ class WandbLogger():
         if isinstance(img, torch.Tensor):
             img_np = img.detach().cpu().float()
             if img_np.ndim == 3:
-                img_np = img_np.permute(1, 2, 0)
+                img_np = img_np.permute(1, 2, 0)  # CHW -> HWC
+            mean = torch.tensor([0.485, 0.456, 0.406])
+            std  = torch.tensor([0.229, 0.224, 0.225])
+            img_np = (img_np * std + mean).clamp(0.0, 1.0)
             return (img_np * 255.0).round().to(torch.uint8).numpy()
 
         img_np = np.asarray(img)

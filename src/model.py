@@ -95,7 +95,5 @@ class SegmentationModel(nn.Module):
         # obtain the segmentation mask
         map = self.head(decFeatures)
 
-        map_binary = torch.sigmoid(map)
-
         # return the segmentation map
-        return map_binary
+        return map

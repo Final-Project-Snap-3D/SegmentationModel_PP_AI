@@ -18,7 +18,7 @@ def main():
     # Model
     parser.add_argument("--in_channels", help="canals d'entrada (RGB=3)", type=int, default=3)
     parser.add_argument("--num_classes", help="classes de sortida (binari=1), objecte/no objecte", type=int, default=1)
-    parser.add_argument("--base_channels", help="filtres first layer", type=int, default=32)
+    parser.add_argument("--base_channels", help="filtres first layer", type=int, default=16)
     # Training
     parser.add_argument("--epochs", help="nombre d'èpoques", type=int, default=10)
     parser.add_argument("--batch_size", help="mida del batch", type=int, default=8)
@@ -57,7 +57,13 @@ def main():
     print(f"Train samples: {len(train_dataset)} | Val samples: {len(val_dataset)}")
 
     # Model, loss, optimizer
-    model = SegmentationModel().to(device)
+    b = args.base_channels
+    model = SegmentationModel(
+        encChannels=(args.in_channels, b, b * 2, b * 4),
+        decChannels=(b * 4, b * 2, b),
+        nbClasses=args.num_classes,
+    ).to(device)
+    
     criterion = torch.nn.BCEWithLogitsLoss() # Més endavant hauríem de fer BCEWithLogitsLoss amb Dice si les segmentacions no són òptimes en resultats (molt background per exemple)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr) # Adam o Adam W, y palante 
 
@@ -106,8 +112,8 @@ def main():
                 loss = criterion(y_pred, y_true)
                 val_loss += loss.item()
 
-                #y_prob = torch.sigmoid(y_pred)
-                y_hat = (y_pred > 0.5).float()
+                y_prob = torch.sigmoid(y_pred)
+                y_hat = (y_prob > 0.5).float()
 
                 intersection = (y_hat * y_true).sum(dim=(1, 2, 3))
                 union = y_hat.sum(dim=(1, 2, 3)) + y_true.sum(dim=(1, 2, 3)) - intersection
