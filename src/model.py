@@ -75,7 +75,8 @@ class SegmentationModel(nn.Module):
           nbClasses=1):
 
         super().__init__()
-        # TODO: initialize the encoder and decoder
+        self.encChannels = encChannels
+        self.decChannels = decChannels
         self.encoder = Encoder(encChannels)
         self.decoder = Decoder(decChannels)
 
@@ -94,5 +95,7 @@ class SegmentationModel(nn.Module):
         # obtain the segmentation mask
         map = self.head(decFeatures)
 
+        map_binary = torch.sigmoid(map)
+
         # return the segmentation map
-        return map
+        return map_binary

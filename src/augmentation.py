@@ -45,7 +45,7 @@ class DataAugmentation:
             ToTensorV2(),
         ])
 
-    def val(self):
+    def val_test(self):
         # val/test: només resize + normalize per reproduir les mètriques entre epochs
         return A.Compose([
             A.Resize(self.img_size, self.img_size),

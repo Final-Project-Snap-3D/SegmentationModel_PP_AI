@@ -10,6 +10,7 @@ from augmentation import DataAugmentation
 from wandb_logger import WandbLogger
 from utils import TaskType
 
+from test_evaluation import run_evaluation
 
 # Proposta de main com la sessio1 del lab de MLOps, es pot modificar
 def main():
@@ -28,6 +29,9 @@ def main():
     parser.add_argument("--val_images_dir", help="ruta imatges val", type=str, default="data/val")
     parser.add_argument("--train_annotations", help="ruta JSON train", type=str, default="data/annotations/VizWiz_SOD_train_challenge.json")
     parser.add_argument("--val_annotations", help="ruta JSON val", type=str, default="data/annotations/VizWiz_SOD_val_challenge.json")
+    # Test
+    parser.add_argument("--test_images_dir", help="ruta imatges test", type=str, default="data/test")
+    parser.add_argument("--test_annotations", help="ruta JSON test", type=str, default="data/annotations/test.json")
     # Checkpoints
     parser.add_argument("--checkpoint_dir", help="ruta per guardar checkpoints", type=str, default="checkpoints")
 
@@ -47,7 +51,7 @@ def main():
     train_dataset = VizWiz(args.train_images_dir, args.train_annotations, transform=aug.train())
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, drop_last=True)
     
-    val_dataset = VizWiz(args.val_images_dir, args.val_annotations, transform=aug.val())
+    val_dataset = VizWiz(args.val_images_dir, args.val_annotations, transform=aug.val_test())
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False)
     
     print(f"Train samples: {len(train_dataset)} | Val samples: {len(val_dataset)}")
@@ -66,6 +70,7 @@ def main():
     # Training loop
     print("\nStarting training...\n")
     best_val_loss = float('inf')
+    best_model_path = checkpoint_dir / "best_model.pt"
     eps = 1e-7
 
     for epoch in range(args.epochs):
@@ -101,8 +106,8 @@ def main():
                 loss = criterion(y_pred, y_true)
                 val_loss += loss.item()
 
-                y_prob = torch.sigmoid(y_pred)
-                y_hat = (y_prob > 0.5).float()
+                #y_prob = torch.sigmoid(y_pred)
+                y_hat = (y_pred > 0.5).float()
 
                 intersection = (y_hat * y_true).sum(dim=(1, 2, 3))
                 union = y_hat.sum(dim=(1, 2, 3)) + y_true.sum(dim=(1, 2, 3)) - intersection
@@ -161,6 +166,20 @@ def main():
     logger.log_model(str(best_model_path), name="best_model")
     logger.finish()
 
+    # Test evaluation with best model
+    """if best_model_path.exists() and Path(args.test_images_dir).exists():
+        print(f"\nRunning test evaluation with best model: {best_model_path}")
+        test_metrics = run_evaluation(
+            model_path=str(best_model_path),
+            images_dir=args.test_images_dir,
+            annotations=args.test_annotations,
+            image_size=args.image_size,
+            batch_size=args.batch_size,
+        )
+        print("\n=== Test Evaluation Results ===")
+        for k, v in test_metrics.items():
+            print(f"  {k.upper():12s}: {v:.4f}")
+        print("================================\n")"""
 
 if __name__ == "__main__":
     main()

@@ -2,10 +2,12 @@ import torch
 import torch.nn as nn
 import wandb
 from datetime import datetime
+from data_visualization import visualize
 from utils import TaskType
 from pathlib import Path
 import numpy as np
 from PIL import Image
+import matplotlib.pyplot as plt
 
 
 class WandbLogger():
@@ -36,6 +38,8 @@ class WandbLogger():
         Path(model_path).parent.mkdir(parents=True, exist_ok=True)
         torch.save({
             'model_state_dict': self.model.state_dict(),
+            'enc_channels': self.model.encChannels,
+            'dec_channels': self.model.decChannels,
             'timestamp': datetime.now().isoformat(),
         }, model_path)
 
@@ -50,7 +54,7 @@ class WandbLogger():
         for img, mask in zip(images, masks):
             # Convert CHW float tensor to HWC uint8 image in [0, 255] for W&B.
             if isinstance(img, torch.Tensor):
-                img_np = img.detach().cpu().float().clamp(0.0, 1.0)
+                img_np = img.detach().cpu().float()
                 if img_np.ndim == 3:
                     img_np = img_np.permute(1, 2, 0)
                 img_np = (img_np * 255.0).round().to(torch.uint8).numpy()
@@ -68,6 +72,17 @@ class WandbLogger():
                 if mask_np.ndim == 3 and mask_np.shape[0] == 1:
                     mask_np = np.squeeze(mask_np, axis=0)
                 mask_np = mask_np.astype(np.int32)
+            
+            fig, axes = plt.subplots(1, 2, figsize=(10, 5))
+            axes[0].imshow(img_np)
+            axes[0].set_title(f"Image")
+            axes[0].axis('off')
+
+            plt.tight_layout()
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            plt.savefig(f"{ts}.png")
+            plt.close()
+            print(f"Saved {ts}.png")
 
             wandb.log({
                 "image": [
@@ -86,7 +101,7 @@ class WandbLogger():
     def _to_hwc_uint8_image(self, img):
         """Convert tensor/array image to HWC uint8 in [0, 255]."""
         if isinstance(img, torch.Tensor):
-            img_np = img.detach().cpu().float().clamp(0.0, 1.0)
+            img_np = img.detach().cpu().float()
             if img_np.ndim == 3:
                 img_np = img_np.permute(1, 2, 0)
             return (img_np * 255.0).round().to(torch.uint8).numpy()
