@@ -20,8 +20,8 @@ def main():
     parser.add_argument("--num_classes", help="classes de sortida (binari=1), objecte/no objecte", type=int, default=1)
     parser.add_argument("--base_channels", help="filtres first layer", type=int, default=16)
     # Training
-    parser.add_argument("--epochs", help="nombre d'èpoques", type=int, default=10)
-    parser.add_argument("--batch_size", help="mida del batch", type=int, default=8)
+    parser.add_argument("--epochs", help="nombre d'èpoques", type=int, default=100)
+    parser.add_argument("--batch_size", help="mida del batch", type=int, default=32)
     parser.add_argument("--lr", help="learning rate", type=float, default=1e-3) # FYI: a SAM2 utilitzen reciprocal square-root schedule
     # Data
     parser.add_argument("--image_size", help="mida de les imatges per fer el resize", type=int, default=512) # FYI: el SAM2 es 1024/si cal podriem baixar mes
