@@ -2,7 +2,6 @@ import torch
 import torch.nn as nn
 import wandb
 from datetime import datetime
-from data_visualization import visualize
 from utils import TaskType
 from pathlib import Path
 import numpy as np
@@ -72,17 +71,6 @@ class WandbLogger():
                 if mask_np.ndim == 3 and mask_np.shape[0] == 1:
                     mask_np = np.squeeze(mask_np, axis=0)
                 mask_np = mask_np.astype(np.int32)
-            
-            fig, axes = plt.subplots(1, 2, figsize=(10, 5))
-            axes[0].imshow(img_np)
-            axes[0].set_title(f"Image")
-            axes[0].axis('off')
-
-            plt.tight_layout()
-            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            plt.savefig(f"{ts}.png")
-            plt.close()
-            print(f"Saved {ts}.png")
 
             wandb.log({
                 "image": [
@@ -141,6 +129,21 @@ class WandbLogger():
 
             image_np = self._to_hwc_uint8_image(img)
             mask_np = self._to_hw_uint8_mask(mask)
+
+            fig, axes = plt.subplots(1, 2, figsize=(10, 5))
+            axes[0].imshow(image_np)
+            axes[0].set_title(f"Image")
+            axes[0].axis('off')
+
+            axes[1].imshow(mask_np, cmap='gray')
+            axes[1].set_title("Mask")
+            axes[1].axis('off')
+
+            plt.tight_layout()
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            plt.savefig(f"{ts}.png")
+            plt.close()
+            print(f"Saved {ts}.png")
 
             image_path = sample_dir / "image.png"
             mask_path = sample_dir / "mask.png"
