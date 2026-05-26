@@ -75,7 +75,8 @@ class SegmentationModel(nn.Module):
           nbClasses=1):
 
         super().__init__()
-        # TODO: initialize the encoder and decoder
+        self.encChannels = encChannels
+        self.decChannels = decChannels
         self.encoder = Encoder(encChannels)
         self.decoder = Decoder(decChannels)
 

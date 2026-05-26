@@ -14,8 +14,16 @@ class VizWiz(Dataset):
         with open(annotations_path, 'r') as f:
             self.annotations = json.load(f)
 
-        # Només les imatges que tenen anotació
-        self.img_names = [n for n in os.listdir(images_dir) if n in self.annotations]
+        # Només les imatges que tenen anotació i que completen el format requerit
+        valid_images = []
+        for n in os.listdir(images_dir):
+            if n in self.annotations:
+                # Check that annotation has required keys
+                ann = self.annotations[n]
+                if 'Salient Object' in ann and 'Ground Truth Dimensions' in ann:
+                    valid_images.append(n)
+        self.img_names = valid_images
+        
         self.images_dir = images_dir
         self.annotations_path = annotations_path
         self.transform = transform

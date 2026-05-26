@@ -113,3 +113,11 @@ python -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
 ```
+
+## Testing training loop with only n test samples and n validation samples
+
+Create folders inside data named one_image_val / one_image_train and place there the samples you want to use
+
+```bash
+python src/main.py --batch_size 1 --train_images_dir "data/one_image_train" --val_images_dir "data/one_image_val"
+```
