@@ -123,8 +123,8 @@ class WandbLogger():
         mask_np = (mask_np > 0).astype(np.uint8) * 255
         return mask_np
 
-    def log_segmentation_samples(self, images: list, masks: list, epoch: int, max_items: int = 3):
-        """Log val image+mask pairs as W&B media panel — appears in Charts alongside metrics."""
+    def build_segmentation_images(self, images: list, masks: list, max_items: int = 3) -> list:
+        """Build list of wandb.Image with mask overlays (call before log_metrics to merge into same step)."""
         wb_images = []
         for img, mask in zip(images[:max_items], masks[:max_items]):
             img_np = self._to_hwc_uint8_image(img)
@@ -148,8 +148,7 @@ class WandbLogger():
                     },
                 )
             )
-
-        wandb.log({"val/segmentation_samples": wb_images}, step=epoch)
+        return wb_images
 
     def finish(self):
         """Finish the W&B run"""

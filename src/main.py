@@ -139,20 +139,20 @@ def main():
             f"Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} | "
             f"Val IoU: {val_iou:.4f} | Val Dice: {val_dice:.4f}"
         )
-        logger.log_metrics({
+        metrics = {
             'train_loss': train_loss,
             'val_loss': val_loss,
             'val_iou': val_iou,
             'val_dice': val_dice,
-        }, step=epoch+1)
-
+        }
         if sample_images is not None and sample_masks is not None:
-            logger.log_segmentation_samples(
+            metrics['val/segmentation_samples'] = logger.build_segmentation_images(
                 images=sample_images,
                 masks=sample_masks,
-                epoch=epoch + 1,
                 max_items=3,
             )
+        logger.log_metrics(metrics, step=epoch+1)
+        if 'val/segmentation_samples' in metrics:
             print("  ✓ Logged 3 validation segmentation samples")
         
         # Save best model
