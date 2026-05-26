@@ -12,5 +12,3 @@ source venv/bin/activate
 
 print_log "Starting training with arguments: $*"
 python src/main.py "$@" 2>&1 | ts "[%Y-%m-%d %H:%M:%S] - $me:" >> $LOG
-
-exit 0
