@@ -123,26 +123,28 @@ class WandbLogger():
         mask_np = (mask_np > 0).astype(np.uint8) * 255
         return mask_np
 
-    def build_segmentation_images(self, images: list, masks: list, max_items: int = 3) -> list:
-        """Build list of wandb.Image from matplotlib figures (image | predicted mask side by side)."""
-        wb_images = []
+    def build_segmentation_images(self, images: list, masks: list, epoch: int, max_items: int = 3) -> dict:
+        """Return dict — one key per sample → separate W&B panel with interactive mask overlay."""
+        result = {}
         for i, (img, mask) in enumerate(zip(images[:max_items], masks[:max_items]), start=1):
             img_np = self._to_hwc_uint8_image(img)
-            mask_np = self._to_hw_uint8_mask(mask)
 
-            fig, axes = plt.subplots(1, 2, figsize=(8, 4))
-            axes[0].imshow(img_np)
-            axes[0].set_title(f"Image #{i}")
-            axes[0].axis('off')
-            axes[1].imshow(mask_np, cmap='gray')
-            axes[1].set_title(f"Pred Mask #{i}")
-            axes[1].axis('off')
-            plt.tight_layout()
+            mask_np = mask.detach().cpu() if isinstance(mask, torch.Tensor) else np.asarray(mask)
+            if mask_np.ndim == 3 and mask_np.shape[0] == 1:
+                mask_np = mask_np.squeeze(0) if isinstance(mask_np, torch.Tensor) else np.squeeze(mask_np, axis=0)
+            mask_np = mask_np.long().numpy() if isinstance(mask_np, torch.Tensor) else mask_np.astype(np.int32)
 
-            wb_images.append(wandb.Image(fig))
-            plt.close(fig)
+            result[f"val/sample_{i}"] = wandb.Image(
+                img_np,
+                masks={
+                    "predictions": {
+                        "mask_data": mask_np,
+                        "class_labels": {0: "background", 1: "object"},
+                    }
+                },
+            )
 
-        return wb_images
+        return result
 
     def finish(self):
         """Finish the W&B run"""

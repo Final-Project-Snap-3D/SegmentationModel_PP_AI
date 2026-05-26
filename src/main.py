@@ -146,13 +146,14 @@ def main():
             'val_dice': val_dice,
         }
         if sample_images is not None and sample_masks is not None:
-            metrics['val/segmentation_samples'] = logger.build_segmentation_images(
+            metrics.update(logger.build_segmentation_images(
                 images=sample_images,
                 masks=sample_masks,
+                epoch=epoch + 1,
                 max_items=3,
-            )
+            ))
         logger.log_metrics(metrics, step=epoch+1)
-        if 'val/segmentation_samples' in metrics:
+        if 'val/sample_1' in metrics:
             print("  ✓ Logged 3 validation segmentation samples")
         
         # Save best model
