@@ -12,6 +12,30 @@ from utils import TaskType
 
 from test_evaluation import run_evaluation
 
+def compute_iou_dice_metrics(y_pred, y_true, eps=1e-7):
+    """
+    Compute IoU and Dice metrics for segmentation.
+    
+    Args:
+        y_pred: Predicted logits from model
+        y_true: Ground truth binary masks
+        eps: Small epsilon value for numerical stability
+    
+    Returns:
+        iou: IoU scores per sample
+        dice: Dice scores per sample
+    """
+    y_prob = torch.sigmoid(y_pred)
+    y_hat = (y_prob > 0.5).float()
+    
+    intersection = (y_hat * y_true).sum(dim=(1, 2, 3))
+    union = y_hat.sum(dim=(1, 2, 3)) + y_true.sum(dim=(1, 2, 3)) - intersection
+    
+    iou = (intersection + eps) / (union + eps)
+    dice = (2 * intersection + eps) / (y_hat.sum(dim=(1, 2, 3)) + y_true.sum(dim=(1, 2, 3)) + eps)
+    
+    return iou, dice, y_hat
+
 # Proposta de main com la sessio1 del lab de MLOps, es pot modificar
 def main():
     parser = argparse.ArgumentParser()
@@ -113,14 +137,7 @@ def main():
                 loss = criterion(y_pred, y_true)
                 val_loss += loss.item()
 
-                y_prob = torch.sigmoid(y_pred)
-                y_hat = (y_prob > 0.5).float()
-
-                intersection = (y_hat * y_true).sum(dim=(1, 2, 3))
-                union = y_hat.sum(dim=(1, 2, 3)) + y_true.sum(dim=(1, 2, 3)) - intersection
-
-                iou = (intersection + eps) / (union + eps)
-                dice = (2 * intersection + eps) / (y_hat.sum(dim=(1, 2, 3)) + y_true.sum(dim=(1, 2, 3)) + eps)
+                iou, dice, y_hat = compute_iou_dice_metrics(y_pred, y_true, eps)
 
                 val_iou_sum += iou.sum().item()
                 val_dice_sum += dice.sum().item()
