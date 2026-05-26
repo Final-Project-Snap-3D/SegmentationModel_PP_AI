@@ -124,8 +124,8 @@ class WandbLogger():
         return mask_np
 
     def build_segmentation_images(self, images: list, masks: list, epoch: int, max_items: int = 3) -> dict:
-        """Return dict — one key per sample → separate W&B panel with interactive mask overlay."""
-        result = {}
+        """Return dict with a single key containing all samples as a list → one gallery panel in W&B."""
+        wandb_images = []
         for i, (img, mask) in enumerate(zip(images[:max_items], masks[:max_items]), start=1):
             img_np = self._to_hwc_uint8_image(img)
 
@@ -134,7 +134,7 @@ class WandbLogger():
                 mask_np = mask_np.squeeze(0) if isinstance(mask_np, torch.Tensor) else np.squeeze(mask_np, axis=0)
             mask_np = mask_np.long().numpy() if isinstance(mask_np, torch.Tensor) else mask_np.astype(np.int32)
 
-            result[f"val/sample_{i}"] = wandb.Image(
+            wandb_images.append(wandb.Image(
                 img_np,
                 masks={
                     "predictions": {
@@ -142,9 +142,10 @@ class WandbLogger():
                         "class_labels": {0: "background", 1: "object"},
                     }
                 },
-            )
+                caption=f"sample_{i}",
+            ))
 
-        return result
+        return {"val/predictions": wandb_images}
 
     def finish(self):
         """Finish the W&B run"""

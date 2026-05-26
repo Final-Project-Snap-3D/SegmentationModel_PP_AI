@@ -23,6 +23,7 @@ def main():
     parser.add_argument("--epochs", help="nombre d'èpoques", type=int, default=100)
     parser.add_argument("--batch_size", help="mida del batch", type=int, default=32)
     parser.add_argument("--lr", help="learning rate", type=float, default=1e-3) # FYI: a SAM2 utilitzen reciprocal square-root schedule
+    parser.add_argument("--log_image_every", help="log validation images every N epochs", type=int, default=5)
     # Data
     parser.add_argument("--image_size", help="mida de les imatges per fer el resize", type=int, default=512) # FYI: el SAM2 es 1024/si cal podriem baixar mes
     parser.add_argument("--train_images_dir", help="ruta imatges train", type=str, default="data/train")
@@ -145,7 +146,7 @@ def main():
             'val_iou': val_iou,
             'val_dice': val_dice,
         }
-        if sample_images is not None and sample_masks is not None:
+        if (epoch + 1) % args.log_image_every == 0 and sample_images is not None and sample_masks is not None:
             metrics.update(logger.build_segmentation_images(
                 images=sample_images,
                 masks=sample_masks,
@@ -153,7 +154,7 @@ def main():
                 max_items=3,
             ))
         logger.log_metrics(metrics, step=epoch+1)
-        if 'val/sample_1' in metrics:
+        if 'val/predictions' in metrics:
             print("  ✓ Logged 3 validation segmentation samples")
         
         # Save best model
