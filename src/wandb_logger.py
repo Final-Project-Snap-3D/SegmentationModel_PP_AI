@@ -123,46 +123,33 @@ class WandbLogger():
         mask_np = (mask_np > 0).astype(np.uint8) * 255
         return mask_np
 
-    def log_image_mask_artifacts(self, images: list, masks: list, epoch: int, base_dir: str, max_items: int = 3):
-        """Store image/mask pairs as independent W&B artifacts."""
-        artifacts_root = Path(base_dir) / "wandb_artifacts" / f"epoch_{epoch:04d}"
-        artifacts_root.mkdir(parents=True, exist_ok=True)
+    def log_segmentation_samples(self, images: list, masks: list, epoch: int, max_items: int = 3):
+        """Log val image+mask pairs as W&B media panel — appears in Charts alongside metrics."""
+        wb_images = []
+        for img, mask in zip(images[:max_items], masks[:max_items]):
+            img_np = self._to_hwc_uint8_image(img)
 
-        for idx, (img, mask) in enumerate(zip(images[:max_items], masks[:max_items]), start=1):
-            sample_dir = artifacts_root / f"sample_{idx}"
-            sample_dir.mkdir(parents=True, exist_ok=True)
+            mask_np = mask.detach().cpu() if isinstance(mask, torch.Tensor) else np.asarray(mask)
+            if mask_np.ndim == 3 and mask_np.shape[0] == 1:
+                mask_np = mask_np.squeeze(0) if isinstance(mask_np, torch.Tensor) else np.squeeze(mask_np, axis=0)
+            if isinstance(mask_np, torch.Tensor):
+                mask_np = mask_np.long().numpy()
+            else:
+                mask_np = mask_np.astype(np.int32)
 
-            image_np = self._to_hwc_uint8_image(img)
-            mask_np = self._to_hw_uint8_mask(mask)
-
-            fig, axes = plt.subplots(1, 2, figsize=(10, 5))
-            axes[0].imshow(image_np)
-            axes[0].set_title(f"Image")
-            axes[0].axis('off')
-
-            axes[1].imshow(mask_np, cmap='gray')
-            axes[1].set_title("Mask")
-            axes[1].axis('off')
-
-            plt.tight_layout()
-            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            plt.savefig(f"{ts}.png")
-            plt.close()
-            print(f"Saved {ts}.png")
-
-            image_path = sample_dir / "image.png"
-            mask_path = sample_dir / "mask.png"
-            Image.fromarray(image_np).save(image_path)
-            Image.fromarray(mask_np).save(mask_path)
-
-            artifact = wandb.Artifact(
-                name=f"val-sample-{idx}-epoch-{epoch:04d}",
-                type="validation-sample",
-                metadata={"epoch": epoch, "sample_index": idx},
+            wb_images.append(
+                wandb.Image(
+                    img_np,
+                    masks={
+                        "predictions": {
+                            "mask_data": mask_np,
+                            "class_labels": {0: "background", 1: "object"},
+                        }
+                    },
+                )
             )
-            artifact.add_file(str(image_path), name="image.png")
-            artifact.add_file(str(mask_path), name="mask.png")
-            wandb.log_artifact(artifact)
+
+        wandb.log({"val/segmentation_samples": wb_images}, step=epoch)
 
     def finish(self):
         """Finish the W&B run"""

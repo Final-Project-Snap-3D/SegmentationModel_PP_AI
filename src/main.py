@@ -146,15 +146,14 @@ def main():
             'val_dice': val_dice,
         }, step=epoch+1)
 
-        if (epoch + 1) % 5 == 0 and sample_images is not None and sample_masks is not None:
-            logger.log_image_mask_artifacts(
+        if sample_images is not None and sample_masks is not None:
+            logger.log_segmentation_samples(
                 images=sample_images,
                 masks=sample_masks,
                 epoch=epoch + 1,
-                base_dir=str(checkpoint_dir),
                 max_items=3,
             )
-            print("  ✓ Logged 3 validation image/mask artifacts")
+            print("  ✓ Logged 3 validation segmentation samples")
         
         # Save best model
         if val_loss < best_val_loss:
