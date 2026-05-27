@@ -1,6 +1,8 @@
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+import cv2
+import numpy as np
 import torch
 from torch.utils.data import DataLoader
 from dataset import VizWiz
@@ -30,8 +32,20 @@ def denormalize(image):
     return (image * std + mean).clamp(0, 1)
 
 
+# overlay de màscara en vermell sobre la imatge
+def make_overlay(image_np, mask_np, color=(1.0, 0.0, 0.0), alpha=0.5):
+    # Si raw dataset, image (mida nativa) i mask (mida anotació) poden no coincidir → redimensionem la màscara
+    if mask_np.shape[:2] != image_np.shape[:2]:
+        h, w = image_np.shape[:2]
+        mask_np = cv2.resize(mask_np.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST)
+    color_layer = np.zeros_like(image_np)
+    color_layer[mask_np > 0] = color
+    blended = (1 - alpha) * image_np + alpha * color_layer
+    return np.where(mask_np[..., None] > 0, blended, image_np).clip(0, 1)
+
+
 # --- visualize ---
-def visualize(dataset, idx, prefix="viz", do_denormalize=False):
+def visualize(dataset, idx, prefix="viz", do_denormalize=False, show_mask_overlay=False):
     image, mask = dataset[idx]
 
     # Converteix tensor (C,H,W) a numpy (H,W,C) per a matplotlib
@@ -42,7 +56,8 @@ def visualize(dataset, idx, prefix="viz", do_denormalize=False):
     if isinstance(mask, torch.Tensor):
         mask = mask.cpu().numpy()
 
-    fig, axes = plt.subplots(1, 2, figsize=(10, 5))
+    n_panels = 3 if show_mask_overlay else 2
+    fig, axes = plt.subplots(1, n_panels, figsize=(5 * n_panels, 5))
 
     axes[0].imshow(image)
     axes[0].set_title(f"Image: {dataset.get_name(idx)}")
@@ -52,6 +67,11 @@ def visualize(dataset, idx, prefix="viz", do_denormalize=False):
     axes[1].set_title("Mask")
     axes[1].axis('off')
 
+    if show_mask_overlay:
+        axes[2].imshow(make_overlay(image, mask))
+        axes[2].set_title("Overlay")
+        axes[2].axis('off')
+
     plt.tight_layout()
     plt.savefig(f"{prefix}_{idx}.png")   # saves to project root
     plt.close()
@@ -60,8 +80,9 @@ def visualize(dataset, idx, prefix="viz", do_denormalize=False):
 
 # visualize a few samples (raw)
 for idx in [0, 1, 2]:
-    visualize(dataset, idx)
+    visualize(dataset, idx, show_mask_overlay=True)
 
-# visualize amb augmentació aplicada
+# visualize amb augmentació aplicada (overlay per comprovar alineació)
 for idx in [0, 1, 2]:
-    visualize(dataset_transformed, idx, prefix="viz_transformed", do_denormalize=True)
+    visualize(dataset_transformed, idx, prefix="viz_transformed",
+              do_denormalize=True, show_mask_overlay=True)
