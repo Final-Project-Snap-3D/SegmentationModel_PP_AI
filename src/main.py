@@ -42,7 +42,7 @@ def main():
     # Model
     parser.add_argument("--in_channels", help="canals d'entrada (RGB=3)", type=int, default=3)
     parser.add_argument("--num_classes", help="classes de sortida (binari=1), objecte/no objecte", type=int, default=1)
-    parser.add_argument("--base_channels", help="filtres first layer", type=int, default=16)
+    parser.add_argument("--base_channels", help="filtres first layer", type=int, default=32)
     # Training
     parser.add_argument("--epochs", help="nombre d'èpoques", type=int, default=100)
     parser.add_argument("--batch_size", help="mida del batch", type=int, default=32)
@@ -84,8 +84,8 @@ def main():
     # Model, loss, optimizer
     b = args.base_channels
     model = SegmentationModel(
-        encChannels=(args.in_channels, b, b * 2, b * 4),
-        decChannels=(b * 4, b * 2, b),
+        encChannels=(args.in_channels, b, b * 2, b * 4, b * 8),
+        decChannels=(b * 8, b * 4, b * 2, b),
         nbClasses=args.num_classes,
     ).to(device)
     
