@@ -9,6 +9,7 @@ from model import SegmentationModel
 from augmentation import DataAugmentation
 from wandb_logger import WandbLogger
 from utils import TaskType
+from losses import BCEDiceLoss
 
 from test_evaluation import run_evaluation
 
@@ -89,7 +90,7 @@ def main():
         nbClasses=args.num_classes,
     ).to(device)
     
-    criterion = torch.nn.BCEWithLogitsLoss() # Més endavant hauríem de fer BCEWithLogitsLoss amb Dice si les segmentacions no són òptimes en resultats (molt background per exemple)
+    criterion = BCEDiceLoss(bce_weight=0.3, dice_weight=0.7)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr) # Adam o Adam W, y palante 
 
     # Logger
