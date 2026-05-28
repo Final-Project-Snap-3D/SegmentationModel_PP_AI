@@ -1,6 +1,6 @@
 #!/bin/bash
 
-source /home/gerard_rosell_cardus/SegmentationModel_PP_AI/global.sh
+source /home/gerard_rosell_cardus/SegmentationModel_PP_AI/global
 
 me=$(echo "$0" | sed -e 's/.sh//g' | sed -e 's,.*/,,')
 LOG=$LOG_DIR

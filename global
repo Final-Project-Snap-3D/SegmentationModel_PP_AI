@@ -8,5 +8,3 @@ function print_log() {
     echo -e "$@" | ts "[%Y-%m-%d %H:%M:%S] - $me:" >> "$LOG"
     echo -e "$@" | ts "[%Y-%m-%d %H:%M:%S] - $me:"
 }
-
-exit 0
