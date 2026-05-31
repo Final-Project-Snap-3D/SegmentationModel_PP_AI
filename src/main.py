@@ -189,6 +189,7 @@ def main():
     print(f"  Checkpoints saved to: {checkpoint_dir}")
     
     logger.log_model(str(best_model_path), name="best_model")
+    logger.log_model(str(final_model_path), name="final_model")
     logger.finish()
 
     # Test evaluation with best model
