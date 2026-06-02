@@ -39,8 +39,11 @@ class WandbLogger():
         Path(model_path).parent.mkdir(parents=True, exist_ok=True)
         torch.save({
             'model_state_dict': self.model.state_dict(),
-            'enc_channels': self.model.encChannels,
-            'dec_channels': self.model.decChannels,
+            'enc_channels': getattr(self.model, 'encChannels', None),
+            'dec_channels': getattr(self.model, 'decChannels', None),
+            'in_channels': getattr(self.model, 'in_channels', None),
+            'out_channels': getattr(self.model, 'out_channels', None),
+            'model_name': type(self.model).__name__,
             'timestamp': datetime.now().isoformat(),
         }, model_path)
 

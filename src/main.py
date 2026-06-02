@@ -5,7 +5,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from dataset import VizWiz
-from model import SegmentationModel
+from model import SegmentationModel, U2Net
 from augmentation import DataAugmentation
 from wandb_logger import WandbLogger
 from utils import TaskType
@@ -41,6 +41,7 @@ def compute_iou_dice_metrics(y_pred, y_true, eps=1e-7):
 def main():
     parser = argparse.ArgumentParser()
     # Model
+    parser.add_argument("--model_name", help="nom del model a entrenar", type=str, default="U2") # Per defecte U2, "U" per utilitzar U-Net
     parser.add_argument("--in_channels", help="canals d'entrada (RGB=3)", type=int, default=3)
     parser.add_argument("--num_classes", help="classes de sortida (binari=1), objecte/no objecte", type=int, default=1)
     parser.add_argument("--base_channels", help="filtres first layer", type=int, default=32)
@@ -84,11 +85,17 @@ def main():
 
     # Model, loss, optimizer
     b = args.base_channels
-    model = SegmentationModel(
-        encChannels=(args.in_channels, b, b * 2, b * 4, b * 8),
-        decChannels=(b * 8, b * 4, b * 2, b),
-        nbClasses=args.num_classes,
-    ).to(device)
+    if args.model_name == "U2":
+        model = U2Net(
+            inChannels=args.in_channels,
+            outChannels=args.num_classes,
+        ).to(device)
+    else:
+        model = SegmentationModel(
+            encChannels=(args.in_channels, b, b * 2, b * 4, b * 8),
+            decChannels=(b * 8, b * 4, b * 2, b),
+            nbClasses=args.num_classes,
+        ).to(device)
     
     criterion = BCEDiceLoss(bce_weight=0.3, dice_weight=0.7)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr) # Adam o Adam W, y palante 
@@ -115,7 +122,11 @@ def main():
             x, y = x.to(device), y.to(device)
             optimizer.zero_grad()
             y_pred = model(x)
-            loss = criterion(y_pred, y.float().unsqueeze(1))
+            y_true = y.float().unsqueeze(1)
+            if isinstance(y_pred, (list, tuple)):
+                loss = sum(criterion(pred, y_true) for pred in y_pred) / len(y_pred)
+            else:
+                loss = criterion(y_pred, y_true)
             loss.backward()
             optimizer.step()
             train_loss += loss.item()
@@ -135,10 +146,15 @@ def main():
                 x, y = x.to(device), y.to(device)
                 y_pred = model(x)
                 y_true = y.float().unsqueeze(1)
-                loss = criterion(y_pred, y_true)
+                if isinstance(y_pred, (list, tuple)):
+                    loss = sum(criterion(pred, y_true) for pred in y_pred) / len(y_pred)
+                    y_pred_for_metrics = y_pred[0]
+                else:
+                    loss = criterion(y_pred, y_true)
+                    y_pred_for_metrics = y_pred
                 val_loss += loss.item()
 
-                iou, dice, y_hat = compute_iou_dice_metrics(y_pred, y_true, eps)
+                iou, dice, y_hat = compute_iou_dice_metrics(y_pred_for_metrics, y_true, eps)
 
                 val_iou_sum += iou.sum().item()
                 val_dice_sum += dice.sum().item()

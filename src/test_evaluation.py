@@ -9,7 +9,7 @@ from PIL import Image
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from dataset import VizWiz
-from model import SegmentationModel
+from model import SegmentationModel, U2Net
 from augmentation import DataAugmentation
 
 
@@ -47,18 +47,27 @@ def run_evaluation(model_path, images_dir, annotations, image_size=512,
     checkpoint = torch.load(model_path, map_location=device)
     if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
         enc_channels = checkpoint.get("enc_channels", (3, 16, 32, 64))
-        dec_channels = checkpoint.get("dec_channels", (64, 32, 16))
-        state_dict   = checkpoint["model_state_dict"]
+        dec_channels = checkpoint.get("dec_channels", (64, 32, 16))        
+        model_name = checkpoint.get("model_name")
+        in_channels = checkpoint.get("in_channels") or 3
+        out_channels = checkpoint.get("out_channels") or 1
+        state_dict = checkpoint["model_state_dict"]
     else:
-        enc_channels = (3, 16, 32, 64)
-        dec_channels = (64, 32, 16)
-        state_dict   = checkpoint
+        enc_channels = None
+        dec_channels = None
+        model_name = None
+        in_channels = 3
+        out_channels = 1
+        state_dict = checkpoint
 
-    model = SegmentationModel(
-        encChannels=enc_channels,
-        decChannels=dec_channels,
-        nbClasses=1,
-    ).to(device)
+    if model_name == "U2Net":
+        model = U2Net(inChannels=in_channels, outChannels=out_channels).to(device)
+    else:
+        model = SegmentationModel(
+            encChannels=enc_channels or (3, 16, 32, 64),
+            decChannels=dec_channels or (64, 32, 16),
+            nbClasses=1,
+        ).to(device)
     model.load_state_dict(state_dict)
     model.eval()
 
@@ -69,6 +78,8 @@ def run_evaluation(model_path, images_dir, annotations, image_size=512,
         for x, y in dataloader:
             x = x.to(device)
             logits = model(x)
+            if isinstance(logits, (list, tuple)):
+                logits = logits[0]
             probs  = torch.sigmoid(logits).squeeze(1).cpu().numpy()
             preds  = probs > threshold
             gts    = y.numpy().astype(bool)
