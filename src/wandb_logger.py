@@ -34,10 +34,15 @@ class WandbLogger():
         """Log metrics to Weights & Biases"""
         wandb.log(metrics, step=step)
 
-    def save_checkpoint(self, model_path: str):
-        """Save model checkpoint locally"""
+    def save_checkpoint(self, model_path: str, optimizer=None, epoch=None, best_val_loss=None):
+        """Save model checkpoint locally.
+
+        If optimizer/epoch/best_val_loss are provided, the checkpoint is
+        resumable (used for 'last.pt'). Otherwise it stores only the
+        weights + metadata (used for 'best.pt' / 'final_model.pt').
+        """
         Path(model_path).parent.mkdir(parents=True, exist_ok=True)
-        torch.save({
+        payload = {
             'model_state_dict': self.model.state_dict(),
             'enc_channels': getattr(self.model, 'encChannels', None),
             'dec_channels': getattr(self.model, 'decChannels', None),
@@ -45,7 +50,14 @@ class WandbLogger():
             'out_channels': getattr(self.model, 'out_channels', None),
             'model_name': type(self.model).__name__,
             'timestamp': datetime.now().isoformat(),
-        }, model_path)
+        }
+        if optimizer is not None:
+            payload['optimizer_state_dict'] = optimizer.state_dict()
+        if epoch is not None:
+            payload['epoch'] = epoch
+        if best_val_loss is not None:
+            payload['best_val_loss'] = best_val_loss
+        torch.save(payload, model_path)
 
     def log_model(self, model_path: str, name: str = None):
         """Log model to W&B artifacts"""

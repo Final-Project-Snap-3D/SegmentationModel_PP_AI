@@ -61,6 +61,7 @@ def main():
     parser.add_argument("--test_annotations", help="ruta JSON test", type=str, default="data/annotations/VizWiz_SOD_test_challenge.json")
     # Checkpoints
     parser.add_argument("--checkpoint_dir", help="ruta per guardar checkpoints", type=str, default="checkpoints")
+    parser.add_argument("--resume", help="ruta a un checkpoint (last.pt) per reprendre el training", type=str, default=None)
 
     args = parser.parse_args()
 
@@ -110,9 +111,27 @@ def main():
     print("\nStarting training...\n")
     best_val_loss = float('inf')
     best_model_path = checkpoint_dir / "best_model.pt"
+    last_model_path = checkpoint_dir / "last.pt"
     eps = 1e-7
+    start_epoch = 0
 
-    for epoch in range(args.epochs):
+    # Resume from checkpoint if requested
+    if args.resume:
+        resume_path = Path(args.resume)
+        if not resume_path.exists():
+            raise FileNotFoundError(f"Resume checkpoint not found: {resume_path}")
+        print(f"Resuming from checkpoint: {resume_path}")
+        ckpt = torch.load(resume_path, map_location=device)
+        model.load_state_dict(ckpt['model_state_dict'])
+        if 'optimizer_state_dict' in ckpt:
+            optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+        else:
+            print("  ⚠ checkpoint has no optimizer state — AdamW will restart cold")
+        start_epoch = int(ckpt.get('epoch', 0))
+        best_val_loss = float(ckpt.get('best_val_loss', float('inf')))
+        print(f"  ↳ resuming at epoch {start_epoch+1}/{args.epochs}, best_val_loss={best_val_loss:.4f}")
+
+    for epoch in range(start_epoch, args.epochs):
         # Train
         model.train()
         train_loss = 0.0
@@ -197,6 +216,14 @@ def main():
             best_model_path = checkpoint_dir / "best_model.pt"
             logger.save_checkpoint(str(best_model_path))
             print(f"  ✓ Best model saved (val_loss: {val_loss:.4f})")
+
+        # Always save last.pt (resumable: model + optimizer + epoch + best_val_loss)
+        logger.save_checkpoint(
+            str(last_model_path),
+            optimizer=optimizer,
+            epoch=epoch + 1,
+            best_val_loss=best_val_loss,
+        )
     
     # Save final model
     final_model_path = checkpoint_dir / "final_model.pt"
