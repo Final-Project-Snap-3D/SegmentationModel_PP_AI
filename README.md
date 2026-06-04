@@ -121,3 +121,62 @@ Create folders inside data named one_image_val / one_image_train and place there
 ```bash
 python src/main.py --batch_size 1 --train_images_dir "data/one_image_train" --val_images_dir "data/one_image_val"
 ```
+
+## YOLO26 (experimental)
+
+Pipeline alternatiu utilitzant YOLO26 d'Ultralytics per instance segmentation. Tractem la salient object detection com a segmentació d'una sola classe.
+
+### Instal·lació
+
+```bash
+pip install ultralytics
+```
+
+Si PyTorch no detecta la GPU (`torch.cuda.is_available()` retorna `False`), reinstal·la-ho amb suport CUDA. Per Python 3.13:
+
+```bash
+pip uninstall torch torchvision -y
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
+```
+
+### Conversió de dades
+
+YOLO no llegeix els JSON de VizWiz. Cal convertir-los a format YOLO (un `.txt` per imatge amb polígons normalitzats). Una sola execució:
+
+```bash
+python src/convert_vizwiz_to_yolo.py
+```
+
+Això genera `data_yolo/` com a directori germà de `data/`:
+
+```
+data_yolo/
+├── images/
+│   ├── train/      # còpies de .jpg
+│   └── val/
+├── labels/
+│   ├── train/      # .txt amb polígons normalitzats [0,1]
+│   └── val/
+└── vizwiz.yaml     # config del dataset
+```
+
+### Entrenament
+
+```bash
+python src/train_yolo.py
+```
+
+Defaults: `yolo26s-seg`, `batch=4`, `imgsz=512`, `epochs=100`, AMP activat. Pensat per GTX 1060 6GB.
+
+### Arguments
+
+- `--model` (default `yolo26s-seg.pt`) — `yolo26n-seg.pt` (mínim) | `yolo26s-seg.pt` | `yolo26m-seg.pt`.
+- `--epochs` (default `100`).
+- `--batch` (default `4`) — pujar a 8 si la VRAM ho permet, baixar a 2 si OOM.
+- `--imgsz` (default `512`).
+- `--device` (default `0`) — índex de la GPU CUDA a utilitzar (`0` = primera GPU). Passar `cpu` per entrenar en CPU.
+- `--project`, `--name` — ruta de sortida (`runs/yolo_vizwiz/exp/`).
+
+### Mètriques
+
+YOLO loga `metrics/mAP50(M)` i `metrics/mAP50-95(M)` (mAP sobre màscares) a `runs/yolo_vizwiz/exp/results.csv`. Per comparar amb el U-Net via Dice/IoU cal un script de post-evaluació que uneixi totes les instàncies predites en una sola màscara binària per imatge.
