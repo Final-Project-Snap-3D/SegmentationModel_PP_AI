@@ -105,7 +105,8 @@ def main():
     checkpoint_dir = Path(args.checkpoint_dir)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     
-    logger = WandbLogger(task=TaskType.SEGMENTATION, model=model)
+    task_type = TaskType.U2NET_SEGMENTATION if args.model_name == "U2" else TaskType.UNET_SEGMENTATION
+    logger = WandbLogger(task=task_type, model=model)
 
     # Training loop
     print("\nStarting training...\n")
