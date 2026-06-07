@@ -11,7 +11,7 @@ from model import SegmentationModel, U2Net
 from augmentation import DataAugmentation
 
 
-def run_inference(model_path, image_path, output_path, image_size=512, threshold=0.5, device=None):
+def run_inference(model_path, image_path, output_path=None, image_size=512, threshold=0.5, device=None):
     if device is None:
         if torch.cuda.is_available():
             device = torch.device("cuda")
@@ -62,6 +62,10 @@ def run_inference(model_path, image_path, output_path, image_size=512, threshold
     mask = (prob > threshold).astype(np.uint8) * 255
     mask_img = Image.fromarray(mask).resize((original_w, original_h), Image.NEAREST)
 
+    if output_path is None:
+        image_name = os.path.basename(image_path)
+        output_path = os.path.join("outputs", "mask_" + image_name)
+
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
     mask_img.save(output_path)
     print(f"Mask saved to: {output_path}")
@@ -71,7 +75,7 @@ def main():
     parser = argparse.ArgumentParser(description="Inferència d'una sola imatge")
     parser.add_argument("--model_path",  required=True, help="ruta al checkpoint del model (.pth)")
     parser.add_argument("--image_path",  required=True, help="ruta a la imatge d'entrada")
-    parser.add_argument("--output_path", required=True, help="ruta on guardar la màscara predita (.png)")
+    parser.add_argument("--output_path", default=None, help="ruta on guardar la màscara predita (default: outputs/mask_<nom_imatge>)")
     parser.add_argument("--image_size",  type=int,   default=512,  help="mida d'entrada al model (default: 512)")
     parser.add_argument("--threshold",   type=float, default=0.5,  help="llindar de binarització (default: 0.5)")
     parser.add_argument("--device",      type=str,   default=None, help="device: cuda / mps / cpu (auto si no s'especifica)")
