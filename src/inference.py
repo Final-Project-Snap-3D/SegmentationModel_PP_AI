@@ -16,7 +16,7 @@ IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".webp"}
 # ── loaders ──────────────────────────────────────────────────────────────────
 
 def _load_torch_model(model_path, device):
-    checkpoint = torch.load(model_path, map_location=device)
+    checkpoint = torch.load(model_path, map_location=device, weights_only=False)
     if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
         enc_channels = checkpoint.get("enc_channels", (3, 16, 32, 64))
         dec_channels = checkpoint.get("dec_channels", (64, 32, 16))
@@ -141,9 +141,9 @@ def run_inference(model_path, input_path, output_dir=None, image_size=512,
 def _is_yolo(model_path):
     """Detect YOLO checkpoints by inspecting the saved keys."""
     try:
-        data = torch.load(model_path, map_location="cpu")
+        data = torch.load(model_path, map_location="cpu", weights_only=False)
         if isinstance(data, dict):
-            return "model" in data and not "model_state_dict" in data
+            return "model" in data and "model_state_dict" not in data
         return False
     except Exception:
         return False
