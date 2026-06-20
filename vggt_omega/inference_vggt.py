@@ -19,12 +19,15 @@ Example
 """
 
 import argparse
+import os
 
 import torch
 
 from vggt_omega.models import VGGTOmega
 from vggt_omega.utils.load_fn import load_and_preprocess_images
 from vggt_omega.utils.pose_enc import encoding_to_camera
+from vggt_omega.visual_util import predictions_to_glb
+from vggt_omega.visualize_predictions import export_depth_pngs, to_numpy_predictions
 
 
 def parse_args() -> argparse.Namespace:
@@ -63,8 +66,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "-o",
         "--output",
+        default="scene.glb",
+        help=(
+            "Output path. A .glb extension exports a 3D point-cloud scene; "
+            "a .pt/.pth extension saves the raw prediction tensors (default: scene.glb)."
+        ),
+    )
+    parser.add_argument(
+        "--conf-thres",
+        type=float,
+        default=20.0,
+        help="Confidence percentile threshold for point filtering in GLB export (default: 20).",
+    )
+    parser.add_argument(
+        "--depth-dir",
         default=None,
-        help="Optional path to save the predictions as a .pt file.",
+        help="If set, also export each depth map as a colorized PNG into this folder.",
     )
     return parser.parse_args()
 
@@ -135,13 +152,25 @@ def main() -> None:
         if isinstance(value, torch.Tensor):
             print(f"  {key:<14} {tuple(value.shape)}")
 
-    if args.output is not None:
+    output_ext = os.path.splitext(args.output)[1].lower()
+    if output_ext in (".pt", ".pth"):
         cpu_predictions = {
             key: value.detach().cpu() if isinstance(value, torch.Tensor) else value
             for key, value in predictions.items()
         }
         torch.save(cpu_predictions, args.output)
         print(f"Saved predictions to {args.output}")
+    elif output_ext == ".glb":
+        predictions_np = to_numpy_predictions(predictions)
+        scene = predictions_to_glb(predictions_np, conf_thres=args.conf_thres)
+        scene.export(args.output)
+        print(f"Saved GLB scene to {args.output}")
+        if args.depth_dir is not None:
+            export_depth_pngs(predictions_np, args.depth_dir)
+    else:
+        raise ValueError(
+            f"Unsupported --output extension '{output_ext}'. Use .glb or .pt/.pth."
+        )
 
 
 if __name__ == "__main__":
