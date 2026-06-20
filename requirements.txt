@@ -1,9 +1,28 @@
-torch>=2.0.0
-torchvision>=0.15.0
-numpy>=1.24.0
+# Core deep learning
+torch>=2.3
+torchvision>=0.18
+numpy>=1.24.0,<2
+
+# Image I/O & processing
 Pillow>=9.0.0
-opencv-python-headless>=4.7.0
-matplotlib>=3.7.0
+opencv-python-headless>=4.7.0,<4.12
 albumentations>=1.3.0
+
+# VGGT-Omega model
+einops
+safetensors
+
+# YOLO
+ultralytics
+
+# 3D / visualization (vggt_omega visual_util & gradio demo)
+scipy
+trimesh
+onnxruntime
+gradio
+requests
+matplotlib>=3.7.0
+
+# Training utilities
 tqdm>=4.65.0
 wandb>=0.26.0
