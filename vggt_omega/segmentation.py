@@ -34,12 +34,18 @@ def add_object_masks(
     frames = torch.as_tensor(frames, dtype=torch.float32)
     num_frames, _, height, width = frames.shape
 
+    # Ultralytics rejects tensors whose H/W aren't divisible by 32, and VGGT uses
+    # a patch size of 16. Feed a list of numpy frames instead so YOLO letterboxes
+    # them to imgsz itself. numpy inputs are assumed BGR, so flip RGB -> BGR.
+    rgb = (frames.clamp(0.0, 1.0).permute(0, 2, 3, 1).cpu().numpy() * 255.0).round().astype(np.uint8)
+    frame_list = [np.ascontiguousarray(rgb[i, :, :, ::-1]) for i in range(num_frames)]
+
     model = YOLO(checkpoint_path)
-    # Tensor input is treated as RGB in [0, 1], so no BGR conversion is needed.
     results = model.predict(
-        frames.to(device) if device is not None else frames,
+        frame_list,
         imgsz=imgsz,
         conf=conf,
+        device=device,
         retina_masks=True,
         verbose=False,
     )
