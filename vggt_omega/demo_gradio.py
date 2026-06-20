@@ -15,8 +15,9 @@ import cv2
 import gradio as gr
 import numpy as np
 import torch
+import trimesh
 
-from visual_util import predictions_to_glb
+from visual_util import predictions_to_point_cloud
 from vggt_omega.models import VGGTOmega
 from vggt_omega.utils.load_fn import load_and_preprocess_images
 from vggt_omega.utils.pose_enc import encoding_to_camera
@@ -172,7 +173,6 @@ def gradio_demo(
     conf_thres=20.0,
     mask_black_bg=False,
     mask_white_bg=False,
-    show_cam=True,
     mask_sky=False,
     max_points_k=1000,
 ):
@@ -191,50 +191,44 @@ def gradio_demo(
     prediction_save_path = os.path.join(target_dir, "predictions.npz")
     np.savez(prediction_save_path, **predictions)
 
-    glbfile = glb_path(
-        target_dir,
-        conf_thres,
-        mask_black_bg,
-        mask_white_bg,
-        show_cam,
-        mask_sky,
-        max_points_k,
-    )
-    scene = predictions_to_glb(
-        predictions,
-        conf_thres=conf_thres,
-        mask_black_bg=mask_black_bg,
-        mask_white_bg=mask_white_bg,
-        show_cam=show_cam,
-        mask_sky=mask_sky,
-        target_dir=target_dir,
-        max_points=int(max_points_k * 1000),
-    )
-    scene.export(file_obj=glbfile)
+    plyfile = ply_path(target_dir, conf_thres, mask_black_bg, mask_white_bg, mask_sky, max_points_k)
+    export_point_cloud(predictions, plyfile, conf_thres, mask_black_bg, mask_white_bg, mask_sky, target_dir, max_points_k)
 
     del predictions
     gc.collect()
     torch.cuda.empty_cache()
 
     return (
-        glbfile,
+        plyfile,
         f"Reconstruction complete: {len(all_files)} frames.",
     )
 
 
-def glb_path(
+def export_point_cloud(predictions, plyfile, conf_thres, mask_black_bg, mask_white_bg, mask_sky, target_dir, max_points_k):
+    vertices, colors = predictions_to_point_cloud(
+        predictions,
+        conf_thres=conf_thres,
+        mask_black_bg=mask_black_bg,
+        mask_white_bg=mask_white_bg,
+        mask_sky=mask_sky,
+        target_dir=target_dir,
+        max_points=int(max_points_k * 1000),
+    )
+    trimesh.PointCloud(vertices=vertices, colors=colors).export(file_obj=plyfile)
+
+
+def ply_path(
     target_dir,
     conf_thres,
     mask_black_bg,
     mask_white_bg,
-    show_cam,
     mask_sky,
     max_points_k,
 ):
     return os.path.join(
         target_dir,
         f"scene_conf{conf_thres}_black{mask_black_bg}_white{mask_white_bg}_"
-        f"cam{show_cam}_sky{mask_sky}_max{int(max_points_k)}k.glb",
+        f"sky{mask_sky}_max{int(max_points_k)}k.ply",
     )
 
 
@@ -243,7 +237,6 @@ def update_visualization(
     conf_thres,
     mask_black_bg,
     mask_white_bg,
-    show_cam,
     mask_sky,
     max_points_k,
 ):
@@ -256,31 +249,13 @@ def update_visualization(
 
     conf_thres = max(3.0, float(conf_thres))
 
-    glbfile = glb_path(
-        target_dir,
-        conf_thres,
-        mask_black_bg,
-        mask_white_bg,
-        show_cam,
-        mask_sky,
-        max_points_k,
-    )
-    if not os.path.exists(glbfile):
+    plyfile = ply_path(target_dir, conf_thres, mask_black_bg, mask_white_bg, mask_sky, max_points_k)
+    if not os.path.exists(plyfile):
         with np.load(predictions_path) as loaded:
             predictions = {key: np.array(loaded[key]) for key in loaded.files}
-        scene = predictions_to_glb(
-            predictions,
-            conf_thres=conf_thres,
-            mask_black_bg=mask_black_bg,
-            mask_white_bg=mask_white_bg,
-            show_cam=show_cam,
-            mask_sky=mask_sky,
-            target_dir=target_dir,
-            max_points=int(max_points_k * 1000),
-        )
-        scene.export(file_obj=glbfile)
+        export_point_cloud(predictions, plyfile, conf_thres, mask_black_bg, mask_white_bg, mask_sky, target_dir, max_points_k)
 
-    return glbfile, "Visualization updated."
+    return plyfile, "Visualization updated."
 
 
 def clear_model3d():
@@ -311,7 +286,6 @@ def build_ui(model: VGGTOmega, image_resolution: int):
         conf_thres,
         mask_black_bg,
         mask_white_bg,
-        show_cam,
         mask_sky,
         max_points_k,
     ):
@@ -322,7 +296,6 @@ def build_ui(model: VGGTOmega, image_resolution: int):
             conf_thres,
             mask_black_bg,
             mask_white_bg,
-            show_cam,
             mask_sky,
             max_points_k,
         )
@@ -358,17 +331,17 @@ def build_ui(model: VGGTOmega, image_resolution: int):
         </p>
 
         <div style="font-size: 16px; line-height: 1.5;">
-        <p>Upload a video or a set of images to create a 3D reconstruction of a scene or object. VGGT-Ω takes these images and generates a 3D point cloud, along with estimated camera poses.</p>
+        <p>Upload a video or a set of images to create a 3D reconstruction of a scene or object. VGGT-Ω takes these images and generates a 3D point cloud.</p>
 
         <h3>Getting Started:</h3>
         <ol>
             <li><strong>Upload Your Data:</strong> Use the "Upload Video" or "Upload Images" buttons on the left to provide your input. Videos will be automatically split into individual frames using the selected sampling rate.</li>
             <li><strong>Preview:</strong> Your uploaded images will appear in the gallery on the left.</li>
-            <li><strong>Reconstruct:</strong> Click the "Reconstruct" button to run camera and depth inference and build the first GLB scene.</li>
-            <li><strong>Visualize:</strong> The point cloud and camera poses will appear in the viewer on the right. You can rotate, pan, zoom, and download the GLB file.</li>
+            <li><strong>Reconstruct:</strong> Click the "Reconstruct" button to run camera and depth inference and build the first point cloud.</li>
+            <li><strong>Visualize:</strong> The point cloud will appear in the viewer on the right. You can rotate, pan, zoom, and download the PLY file.</li>
             <li>
             <strong>Adjust Visualization (Optional):</strong>
-            After reconstruction, adjust the visualization options and click "Update Visual" to refresh the GLB without rerunning inference.
+            After reconstruction, adjust the visualization options and click "Update Visual" to refresh the point cloud without rerunning inference.
             </li>
         </ol>
         <p><strong style="color: #0ea5e9;">Please note:</strong> <span style="color: #0ea5e9; font-weight: bold;">The demo limits Max Points by default to keep the UI responsive; increase Max Points if you need a denser point cloud. Visualizing very dense point clouds may take longer due to third-party rendering, which is independent of VGGT-Ω's processing time.</span></p>
@@ -432,17 +405,16 @@ def build_ui(model: VGGTOmega, image_resolution: int):
                         label="Max Points (K points)",
                     )
                     with gr.Column():
-                        show_cam = gr.Checkbox(label="Show Camera", value=True)
                         mask_sky = gr.Checkbox(label="Filter Sky", value=False)
                         mask_black_bg = gr.Checkbox(label="Filter Black Background", value=False)
                         mask_white_bg = gr.Checkbox(label="Filter White Background", value=False)
 
         # ---------------------- Examples section ----------------------
         examples = [
-            [snow_lift_video, 1.0, [], 20.0, False, False, True, False, 1000],
-            [forest_road_video, 1.0, [], 30.0, False, False, True, False, 1000],
-            [lake_speedboat_video, 1.0, [], 50.0, False, False, True, False, 1000],
-            [desert_road_video, 1.0, [], 50.0, False, False, True, True, 1000],
+            [snow_lift_video, 1.0, [], 20.0, False, False, False, 1000],
+            [forest_road_video, 1.0, [], 30.0, False, False, False, 1000],
+            [lake_speedboat_video, 1.0, [], 50.0, False, False, False, 1000],
+            [desert_road_video, 1.0, [], 50.0, False, False, True, 1000],
         ]
 
         def example_pipeline(
@@ -452,21 +424,19 @@ def build_ui(model: VGGTOmega, image_resolution: int):
             conf_thres,
             mask_black_bg,
             mask_white_bg,
-            show_cam,
             mask_sky,
             max_points_k,
         ):
             target_dir, image_paths = handle_uploads(input_video, input_images, video_sample_fps)
-            glbfile, log_msg = reconstruct(
+            plyfile, log_msg = reconstruct(
                 target_dir,
                 conf_thres,
                 mask_black_bg,
                 mask_white_bg,
-                show_cam,
                 mask_sky,
                 max_points_k,
             )
-            return glbfile, log_msg, target_dir, image_paths
+            return plyfile, log_msg, target_dir, image_paths
 
         gr.Markdown("Click any row to load an example.")
 
@@ -479,7 +449,6 @@ def build_ui(model: VGGTOmega, image_resolution: int):
                 conf_thres,
                 mask_black_bg,
                 mask_white_bg,
-                show_cam,
                 mask_sky,
                 max_points_k,
             ],
@@ -521,7 +490,6 @@ def build_ui(model: VGGTOmega, image_resolution: int):
                 conf_thres,
                 mask_black_bg,
                 mask_white_bg,
-                show_cam,
                 mask_sky,
                 max_points_k,
             ],
@@ -535,7 +503,6 @@ def build_ui(model: VGGTOmega, image_resolution: int):
                 conf_thres,
                 mask_black_bg,
                 mask_white_bg,
-                show_cam,
                 mask_sky,
                 max_points_k,
             ],

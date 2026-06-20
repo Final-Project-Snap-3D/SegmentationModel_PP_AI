@@ -24,10 +24,12 @@ import os
 import torch
 
 from vggt_omega.models import VGGTOmega
+from vggt_omega.segmentation import add_object_masks
 from vggt_omega.utils.load_fn import load_and_preprocess_images
 from vggt_omega.utils.pose_enc import encoding_to_camera
 from vggt_omega.visualize_predictions import (
     export_depth_pngs,
+    export_object_mask_pngs,
     export_point_cloud_ply,
     to_numpy_predictions,
 )
@@ -86,6 +88,23 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="If set, also export each depth map as a colorized PNG into this folder.",
     )
+    parser.add_argument(
+        "--seg-checkpoint",
+        default=None,
+        help="Path to a YOLO-seg checkpoint (e.g. best.pt). If set, only the "
+        "segmented object is kept in the point cloud; the background is dropped.",
+    )
+    parser.add_argument(
+        "--seg-conf",
+        type=float,
+        default=0.25,
+        help="YOLO detection confidence threshold for the object mask (default: 0.25).",
+    )
+    parser.add_argument(
+        "--mask-dir",
+        default=None,
+        help="If set, export each object mask as a black/white PNG into this folder.",
+    )
     return parser.parse_args()
 
 
@@ -96,6 +115,8 @@ def run_inference(
     image_resolution: int = 512,
     mode: str = "balanced",
     device: str = "cuda",
+    seg_checkpoint: str | None = None,
+    seg_conf: float = 0.25,
 ) -> dict[str, torch.Tensor]:
     """Load the model and images, then return the raw predictions plus
     decoded camera extrinsics/intrinsics."""
@@ -121,6 +142,9 @@ def run_inference(
     predictions["camera_tokens"] = camera_and_register_tokens[:, :, :1]
     predictions["registers"] = camera_and_register_tokens[:, :, 1:]
 
+    if seg_checkpoint is not None:
+        add_object_masks(predictions, seg_checkpoint, imgsz=image_resolution, conf=seg_conf, device=device)
+
     return predictions
 
 
@@ -139,6 +163,8 @@ def main() -> None:
         image_resolution=args.resolution,
         mode=args.mode,
         device=args.device,
+        seg_checkpoint=args.seg_checkpoint,
+        seg_conf=args.seg_conf,
     )
 
     print(f"Processed {len(args.images)} image(s):")
@@ -169,6 +195,8 @@ def main() -> None:
         print(f"Saved PLY point cloud to {args.output}")
         if args.depth_dir is not None:
             export_depth_pngs(predictions_np, args.depth_dir)
+        if args.mask_dir is not None:
+            export_object_mask_pngs(predictions_np, args.mask_dir)
     else:
         raise ValueError(
             f"Unsupported --output extension '{output_ext}'. Use .ply or .pt/.pth."

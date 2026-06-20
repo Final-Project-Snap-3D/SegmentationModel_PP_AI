@@ -24,7 +24,7 @@ import os
 import numpy as np
 import torch
 
-from vggt_omega.visual_util import predictions_to_glb
+from vggt_omega.visual_util import predictions_to_point_cloud
 
 
 def parse_args() -> argparse.Namespace:
@@ -52,12 +52,17 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="If set, export each depth map as a colorized PNG into this folder.",
     )
+    parser.add_argument(
+        "--mask-dir",
+        default=None,
+        help="If set, export each object mask as a black/white PNG into this folder.",
+    )
     return parser.parse_args()
 
 
 def to_numpy_predictions(predictions: dict) -> dict:
     """Convert tensors to numpy, drop the leading batch dim, and normalize
-    the key names expected by predictions_to_glb."""
+    the key names expected by predictions_to_point_cloud."""
     predictions_np = {}
     for key, value in predictions.items():
         if isinstance(value, torch.Tensor):
@@ -66,7 +71,7 @@ def to_numpy_predictions(predictions: dict) -> dict:
                 value = value[0]
         predictions_np[key] = value
 
-    # predictions_to_glb / unprojection use the singular key names.
+    # predictions_to_point_cloud / unprojection use the singular key names.
     if "extrinsic" not in predictions_np and "extrinsics" in predictions_np:
         predictions_np["extrinsic"] = predictions_np["extrinsics"]
     if "intrinsic" not in predictions_np and "intrinsics" in predictions_np:
@@ -115,11 +120,8 @@ def export_point_cloud_ply(predictions_np: dict, output_path: str, conf_thres: f
     """Export the depth-unprojected point cloud as a PLY file (no cameras)."""
     import trimesh
 
-    scene = predictions_to_glb(predictions_np, conf_thres=conf_thres, show_cam=False)
-    point_clouds = [geometry for geometry in scene.dump() if isinstance(geometry, trimesh.PointCloud)]
-    if not point_clouds:
-        raise ValueError("No point cloud geometry found to export as PLY.")
-    point_clouds[0].export(output_path)
+    vertices, colors = predictions_to_point_cloud(predictions_np, conf_thres=conf_thres)
+    trimesh.PointCloud(vertices=vertices, colors=colors).export(output_path)
 
 
 def export_depth_pngs(predictions_np: dict, depth_dir: str) -> None:
@@ -141,6 +143,23 @@ def export_depth_pngs(predictions_np: dict, depth_dir: str) -> None:
     print(f"Saved {len(depth)} depth map(s) to {depth_dir}/")
 
 
+def export_object_mask_pngs(predictions_np: dict, mask_dir: str) -> None:
+    """Save each frame's binary object mask as a black/white PNG."""
+    from PIL import Image
+
+    masks = predictions_np.get("object_mask")
+    if masks is None:
+        print("No object_mask in predictions; run inference with --seg-checkpoint to produce one.")
+        return
+
+    os.makedirs(mask_dir, exist_ok=True)
+    masks = np.asarray(masks)  # (num_frames, H, W)
+    for i, frame in enumerate(masks):
+        img = (frame > 0.5).astype(np.uint8) * 255
+        Image.fromarray(img).save(os.path.join(mask_dir, f"mask_{i:03d}.png"))
+    print(f"Saved {len(masks)} object mask(s) to {mask_dir}/")
+
+
 def main() -> None:
     args = parse_args()
 
@@ -156,6 +175,9 @@ def main() -> None:
 
     if args.depth_dir is not None:
         export_depth_pngs(predictions_np, args.depth_dir)
+
+    if args.mask_dir is not None:
+        export_object_mask_pngs(predictions_np, args.mask_dir)
 
 
 if __name__ == "__main__":
