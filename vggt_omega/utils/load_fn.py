@@ -11,6 +11,17 @@ import torch
 from PIL import Image
 from torchvision import transforms as TF
 
+try:
+    from pillow_heif import register_heif_opener
+
+    register_heif_opener()
+except ImportError:
+    warnings.warn(
+        "pillow-heif is not installed; HEIC/HEIF images cannot be loaded. "
+        "Install it with `pip install pillow-heif`.",
+        stacklevel=2,
+    )
+
 
 def load_and_preprocess_images(image_path_list, mode="balanced", image_resolution=512, patch_size=16):
     """Load images for VGGT-Omega inference.
