@@ -7,14 +7,14 @@
 
 """Visualize a predictions.pt file produced by inference_vggt.py.
 
-It builds a GLB point cloud (with the predicted cameras) from the depth maps
-and, optionally, exports each depth map as a colorized PNG.
+It builds a PLY point cloud from the depth maps and, optionally, exports each
+depth map as a colorized PNG.
 
 Example
 -------
     python -m vggt_omega.visualize_predictions \
         --predictions predictions.pt \
-        --output scene.glb \
+        --output scene.ply \
         --depth-dir depth_maps
 """
 
@@ -38,8 +38,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "-o",
         "--output",
-        default="scene.glb",
-        help="Output GLB scene path (default: scene.glb).",
+        default="scene.ply",
+        help="Output PLY point cloud path (default: scene.ply).",
     )
     parser.add_argument(
         "--conf-thres",
@@ -111,6 +111,17 @@ def unproject_depth_map_to_point_map(depth_map: np.ndarray, extrinsic: np.ndarra
     )
 
 
+def export_point_cloud_ply(predictions_np: dict, output_path: str, conf_thres: float = 20.0) -> None:
+    """Export the depth-unprojected point cloud as a PLY file (no cameras)."""
+    import trimesh
+
+    scene = predictions_to_glb(predictions_np, conf_thres=conf_thres, show_cam=False)
+    point_clouds = [geometry for geometry in scene.dump() if isinstance(geometry, trimesh.PointCloud)]
+    if not point_clouds:
+        raise ValueError("No point cloud geometry found to export as PLY.")
+    point_clouds[0].export(output_path)
+
+
 def export_depth_pngs(predictions_np: dict, depth_dir: str) -> None:
     import matplotlib.cm as cm
 
@@ -136,9 +147,12 @@ def main() -> None:
     predictions = torch.load(args.predictions, map_location="cpu")
     predictions_np = to_numpy_predictions(predictions)
 
-    scene = predictions_to_glb(predictions_np, conf_thres=args.conf_thres)
-    scene.export(args.output)
-    print(f"Saved GLB scene to {args.output}")
+    output_ext = os.path.splitext(args.output)[1].lower()
+    if output_ext != ".ply":
+        raise ValueError(f"Unsupported --output extension '{output_ext}'. Use .ply.")
+
+    export_point_cloud_ply(predictions_np, args.output, conf_thres=args.conf_thres)
+    print(f"Saved PLY point cloud to {args.output}")
 
     if args.depth_dir is not None:
         export_depth_pngs(predictions_np, args.depth_dir)

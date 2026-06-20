@@ -19,7 +19,7 @@ def predictions_to_glb(
     conf_thres: float = 20.0,
     mask_black_bg: bool = False,
     mask_white_bg: bool = False,
-    show_cam: bool = True,
+    show_cam: bool = False,
     mask_sky: bool = False,
     target_dir: str | None = None,
     max_points: int = 300000,

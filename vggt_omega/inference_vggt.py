@@ -26,8 +26,11 @@ import torch
 from vggt_omega.models import VGGTOmega
 from vggt_omega.utils.load_fn import load_and_preprocess_images
 from vggt_omega.utils.pose_enc import encoding_to_camera
-from vggt_omega.visual_util import predictions_to_glb
-from vggt_omega.visualize_predictions import export_depth_pngs, to_numpy_predictions
+from vggt_omega.visualize_predictions import (
+    export_depth_pngs,
+    export_point_cloud_ply,
+    to_numpy_predictions,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -66,17 +69,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "-o",
         "--output",
-        default="scene.glb",
+        default="scene.ply",
         help=(
-            "Output path. A .glb extension exports a 3D point-cloud scene; "
-            "a .pt/.pth extension saves the raw prediction tensors (default: scene.glb)."
+            "Output path. A .ply extension exports a point cloud; a .pt/.pth "
+            "extension saves the raw prediction tensors (default: scene.ply)."
         ),
     )
     parser.add_argument(
         "--conf-thres",
         type=float,
         default=20.0,
-        help="Confidence percentile threshold for point filtering in GLB export (default: 20).",
+        help="Confidence percentile threshold for point filtering in PLY export (default: 20).",
     )
     parser.add_argument(
         "--depth-dir",
@@ -160,16 +163,15 @@ def main() -> None:
         }
         torch.save(cpu_predictions, args.output)
         print(f"Saved predictions to {args.output}")
-    elif output_ext == ".glb":
+    elif output_ext == ".ply":
         predictions_np = to_numpy_predictions(predictions)
-        scene = predictions_to_glb(predictions_np, conf_thres=args.conf_thres)
-        scene.export(args.output)
-        print(f"Saved GLB scene to {args.output}")
+        export_point_cloud_ply(predictions_np, args.output, conf_thres=args.conf_thres)
+        print(f"Saved PLY point cloud to {args.output}")
         if args.depth_dir is not None:
             export_depth_pngs(predictions_np, args.depth_dir)
     else:
         raise ValueError(
-            f"Unsupported --output extension '{output_ext}'. Use .glb or .pt/.pth."
+            f"Unsupported --output extension '{output_ext}'. Use .ply or .pt/.pth."
         )
 
 
