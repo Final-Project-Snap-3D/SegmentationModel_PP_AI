@@ -226,3 +226,6 @@ viz_*.png
 # wandb and logging
 wandb/
 checkpoints/
+
+# VGGT-Omega API inference artifacts
+api_outputs/

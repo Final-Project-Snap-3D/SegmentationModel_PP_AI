@@ -1,0 +1,4 @@
+# API server dependencies (on top of the VGGT-Omega inference requirements).
+fastapi>=0.110
+uvicorn[standard]>=0.29
+python-multipart>=0.0.9

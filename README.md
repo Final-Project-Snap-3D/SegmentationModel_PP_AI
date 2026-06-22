@@ -180,3 +180,51 @@ Defaults: `yolo26s-seg`, `batch=4`, `imgsz=512`, `epochs=100`, AMP activat. Pens
 ### Mètriques
 
 YOLO loga `metrics/mAP50(M)` i `metrics/mAP50-95(M)` (mAP sobre màscares) a `runs/yolo_vizwiz/exp/results.csv`. Per comparar amb el U-Net via Dice/IoU cal un script de post-evaluació que uneixi totes les instàncies predites en una sola màscara binària per imatge.
+
+## API d'inferència VGGT-Omega
+
+Servei HTTP (FastAPI) que envolta `vggt_omega/inference_vggt.py`. Accepta una quantitat variable d'imatges en una sola petició, executa la inferència i retorna una núvol de punts PLY (i opcionalment PNGs de depth/màscares). L'especificació completa (camps, respostes, errors, exemples) és a [`vggt_omega/api/API_SPEC.md`](vggt_omega/api/API_SPEC.md).
+
+> ⚠️ El forward pass usa `torch.autocast(device_type="cuda")`, així que **cal una GPU CUDA**. En un host sense CUDA l'endpoint d'inferència retorna `503`.
+
+### Instal·lació
+
+```bash
+pip install -r vggt_omega/requirements.txt
+pip install -r vggt_omega/api/requirements.txt
+```
+
+### Configuració
+
+Els paths dels models i la resta de paràmetres viuen a [`vggt_omega/api/constants.py`](vggt_omega/api/constants.py) i es poden sobreescriure per variable d'entorn. El checkpoint principal de VGGT-Omega (`vggt_omega_1b_512.pt`) **no està al repo**, cal indicar on és:
+
+```bash
+export VGGT_CHECKPOINT=/ruta/a/vggt_omega_1b_512.pt
+# opcionals:
+export VGGT_SEG_CHECKPOINT=yolo26s-seg.pt   # checkpoint YOLO-seg (ja al repo)
+export VGGT_OUTPUT_DIR=api_outputs          # on es desen els artefactes
+export VGGT_DEVICE=cuda
+```
+
+### Arrencar el servidor
+
+Des de l'arrel del repo (perquè `vggt_omega` sigui importable):
+
+```bash
+uvicorn vggt_omega.api.main:app --host 0.0.0.0 --port 8000
+```
+
+Docs interactives (Swagger UI) a `http://localhost:8000/docs`.
+
+### Ús
+
+```bash
+# Inferència sobre N imatges -> retorna JSON amb les URLs de descàrrega
+curl -X POST http://localhost:8000/api/v1/inference \
+  -F "images=@imageA.jpg" \
+  -F "images=@imageB.jpg" \
+  -F "segment=true" -F "export_depth=true"
+
+# Descarregar el núvol de punts del job retornat
+curl -OJ http://localhost:8000/api/v1/jobs/<job_id>/files/scene.ply
+```

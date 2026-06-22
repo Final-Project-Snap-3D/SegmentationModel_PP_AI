@@ -1,0 +1,331 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+# All rights reserved.
+#
+# This source code is licensed under the license found in the
+# LICENSE file in the root directory of this source tree.
+
+"""FastAPI app that runs VGGT-Omega inference on uploaded images.
+
+Run with::
+
+    uvicorn vggt_omega.api.main:app --host 0.0.0.0 --port 8000
+
+The interactive docs (OpenAPI / Swagger UI) are served at ``/docs``.
+"""
+
+from __future__ import annotations
+
+import io
+import shutil
+import tempfile
+import threading
+import uuid
+import zipfile
+from pathlib import Path
+from typing import List, Optional
+
+import torch
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.responses import FileResponse, StreamingResponse
+from pydantic import BaseModel
+
+from vggt_omega.api import constants
+from vggt_omega.inference_vggt import run_inference
+from vggt_omega.visualize_predictions import (
+    export_depth_pngs,
+    export_object_mask_pngs,
+    export_point_cloud_ply,
+    to_numpy_predictions,
+)
+
+app = FastAPI(
+    title=constants.API_TITLE,
+    version=constants.API_VERSION,
+    description=constants.API_DESCRIPTION,
+)
+
+# The model is not thread-safe and shares a single GPU; serialise inference so
+# concurrent requests don't race on CUDA memory. FastAPI runs sync endpoints in
+# a threadpool, so this only blocks other inference calls, not the event loop.
+_INFERENCE_LOCK = threading.Lock()
+
+
+# ---------------------------------------------------------------------------
+# Response models (drive the auto-generated OpenAPI schema)
+# ---------------------------------------------------------------------------
+class ArtifactInfo(BaseModel):
+    name: str
+    type: str  # "point_cloud" | "depth_map" | "object_mask"
+    url: str
+
+
+class InferenceResponse(BaseModel):
+    job_id: str
+    num_images: int
+    device: str
+    shapes: dict[str, list[int]]
+    artifacts: List[ArtifactInfo]
+    archive_url: str
+
+
+class HealthResponse(BaseModel):
+    status: str
+    device: str
+    cuda_available: bool
+    vggt_checkpoint_present: bool
+    seg_checkpoint_present: bool
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+def _check_device_ready() -> None:
+    """Mirror the CUDA guard in inference_vggt.main()."""
+    if constants.DEVICE.startswith("cuda") and not torch.cuda.is_available():
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "CUDA is not available but VGGT-Omega requires a CUDA device "
+                "(the forward pass uses torch.autocast(device_type='cuda')). "
+                "Set VGGT_DEVICE or run on a GPU host."
+            ),
+        )
+
+
+def _validate_uploads(images: List[UploadFile]) -> None:
+    if not images:
+        raise HTTPException(status_code=422, detail="At least 1 image is required.")
+    if len(images) > constants.MAX_IMAGES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Too many images: {len(images)} > MAX_IMAGES={constants.MAX_IMAGES}.",
+        )
+    for upload in images:
+        ext = Path(upload.filename or "").suffix.lower()
+        if ext not in constants.ALLOWED_EXTENSIONS:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Unsupported file '{upload.filename}': extension '{ext}' is "
+                    f"not in {sorted(constants.ALLOWED_EXTENSIONS)}."
+                ),
+            )
+
+
+def _save_uploads(images: List[UploadFile], dest_dir: Path) -> List[str]:
+    """Persist uploads to `dest_dir`, enforcing the per-file size limit."""
+    paths: List[str] = []
+    for index, upload in enumerate(images):
+        ext = Path(upload.filename or "").suffix.lower()
+        target = dest_dir / f"image_{index:03d}{ext}"
+        size = 0
+        with target.open("wb") as fh:
+            while chunk := upload.file.read(1024 * 1024):
+                size += len(chunk)
+                if size > constants.MAX_IMAGE_BYTES:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=(
+                            f"File '{upload.filename}' exceeds the "
+                            f"{constants.MAX_IMAGE_BYTES} byte limit."
+                        ),
+                    )
+                fh.write(chunk)
+        paths.append(str(target))
+    return paths
+
+
+def _tensor_shapes(predictions: dict) -> dict[str, list[int]]:
+    keys = (
+        "pose_enc",
+        "depth",
+        "depth_conf",
+        "extrinsics",
+        "intrinsics",
+        "camera_tokens",
+        "registers",
+        "object_mask",
+    )
+    shapes: dict[str, list[int]] = {}
+    for key in keys:
+        value = predictions.get(key)
+        if isinstance(value, torch.Tensor):
+            shapes[key] = list(value.shape)
+    return shapes
+
+
+def _resolve_job_file(job_id: str, rel_path: str) -> Path:
+    """Resolve a download path, guarding against directory traversal."""
+    job_dir = (constants.OUTPUT_DIR / job_id).resolve()
+    target = (job_dir / rel_path).resolve()
+    if not str(target).startswith(str(job_dir) + "/") and target != job_dir:
+        raise HTTPException(status_code=400, detail="Invalid file path.")
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="File not found.")
+    return target
+
+
+# ---------------------------------------------------------------------------
+# Endpoints
+# ---------------------------------------------------------------------------
+@app.get("/health", response_model=HealthResponse, tags=["meta"])
+def health() -> HealthResponse:
+    """Liveness + readiness: device, CUDA and checkpoint availability."""
+    return HealthResponse(
+        status="ok",
+        device=constants.DEVICE,
+        cuda_available=torch.cuda.is_available(),
+        vggt_checkpoint_present=constants.VGGT_CHECKPOINT.is_file(),
+        seg_checkpoint_present=constants.SEG_CHECKPOINT.is_file(),
+    )
+
+
+@app.post("/api/v1/inference", response_model=InferenceResponse, tags=["inference"])
+def inference(
+    images: List[UploadFile] = File(
+        ..., description="One or more input images (variable amount)."
+    ),
+    resolution: int = Form(
+        constants.DEFAULT_RESOLUTION, description="Preprocessing resolution (multiple of 16)."
+    ),
+    mode: str = Form(
+        constants.DEFAULT_MODE, description="Preprocessing mode: 'balanced' or 'max_size'."
+    ),
+    conf_thres: float = Form(
+        constants.DEFAULT_CONF_THRES,
+        description="Confidence percentile threshold for PLY point filtering.",
+    ),
+    segment: bool = Form(
+        False,
+        description="If true, run YOLO-seg and keep only the segmented object in the cloud.",
+    ),
+    seg_conf: float = Form(
+        constants.DEFAULT_SEG_CONF, description="YOLO detection confidence threshold."
+    ),
+    export_depth: bool = Form(False, description="Also export per-frame depth PNGs."),
+    export_masks: bool = Form(
+        False, description="Also export per-frame object-mask PNGs (requires segment=true)."
+    ),
+) -> InferenceResponse:
+    """Run VGGT-Omega inference over the uploaded images.
+
+    Returns metadata, the output tensor shapes and download URLs for the
+    generated artifacts (point cloud + optional depth / mask PNGs).
+    """
+    _check_device_ready()
+    _validate_uploads(images)
+
+    if mode not in ("balanced", "max_size"):
+        raise HTTPException(
+            status_code=422, detail="mode must be 'balanced' or 'max_size'."
+        )
+    if not constants.VGGT_CHECKPOINT.is_file():
+        raise HTTPException(
+            status_code=503,
+            detail=f"VGGT checkpoint not found at {constants.VGGT_CHECKPOINT}.",
+        )
+    if segment and not constants.SEG_CHECKPOINT.is_file():
+        raise HTTPException(
+            status_code=503,
+            detail=f"Segmentation checkpoint not found at {constants.SEG_CHECKPOINT}.",
+        )
+
+    job_id = uuid.uuid4().hex
+    job_dir = constants.OUTPUT_DIR / job_id
+    job_dir.mkdir(parents=True, exist_ok=True)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        image_paths = _save_uploads(images, Path(tmp))
+
+        with _INFERENCE_LOCK:
+            try:
+                predictions = run_inference(
+                    checkpoint_path=str(constants.VGGT_CHECKPOINT),
+                    image_names=image_paths,
+                    image_resolution=resolution,
+                    mode=mode,
+                    device=constants.DEVICE,
+                    seg_checkpoint=str(constants.SEG_CHECKPOINT) if segment else None,
+                    seg_conf=seg_conf,
+                )
+            except Exception as exc:  # noqa: BLE001 - surface inference errors as 500
+                shutil.rmtree(job_dir, ignore_errors=True)
+                raise HTTPException(
+                    status_code=500, detail=f"Inference failed: {exc}"
+                ) from exc
+
+    shapes = _tensor_shapes(predictions)
+    predictions_np = to_numpy_predictions(predictions)
+
+    artifacts: List[ArtifactInfo] = []
+
+    ply_path = job_dir / "scene.ply"
+    export_point_cloud_ply(predictions_np, str(ply_path), conf_thres=conf_thres)
+    artifacts.append(
+        ArtifactInfo(
+            name="scene.ply",
+            type="point_cloud",
+            url=f"/api/v1/jobs/{job_id}/files/scene.ply",
+        )
+    )
+
+    if export_depth:
+        depth_dir = job_dir / "depth"
+        export_depth_pngs(predictions_np, str(depth_dir))
+        for png in sorted(depth_dir.glob("*.png")):
+            artifacts.append(
+                ArtifactInfo(
+                    name=f"depth/{png.name}",
+                    type="depth_map",
+                    url=f"/api/v1/jobs/{job_id}/files/depth/{png.name}",
+                )
+            )
+
+    if export_masks and "object_mask" in predictions_np:
+        mask_dir = job_dir / "masks"
+        export_object_mask_pngs(predictions_np, str(mask_dir))
+        for png in sorted(mask_dir.glob("*.png")):
+            artifacts.append(
+                ArtifactInfo(
+                    name=f"masks/{png.name}",
+                    type="object_mask",
+                    url=f"/api/v1/jobs/{job_id}/files/masks/{png.name}",
+                )
+            )
+
+    return InferenceResponse(
+        job_id=job_id,
+        num_images=len(image_paths),
+        device=constants.DEVICE,
+        shapes=shapes,
+        artifacts=artifacts,
+        archive_url=f"/api/v1/jobs/{job_id}/archive",
+    )
+
+
+@app.get("/api/v1/jobs/{job_id}/files/{file_path:path}", tags=["inference"])
+def download_file(job_id: str, file_path: str) -> FileResponse:
+    """Download a single artifact produced by a previous inference job."""
+    target = _resolve_job_file(job_id, file_path)
+    return FileResponse(path=str(target), filename=target.name)
+
+
+@app.get("/api/v1/jobs/{job_id}/archive", tags=["inference"])
+def download_archive(job_id: str) -> StreamingResponse:
+    """Download all artifacts of a job as a single ZIP archive."""
+    job_dir = (constants.OUTPUT_DIR / job_id).resolve()
+    if not job_dir.is_dir():
+        raise HTTPException(status_code=404, detail="Job not found.")
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        for path in sorted(job_dir.rglob("*")):
+            if path.is_file():
+                zf.write(path, arcname=str(path.relative_to(job_dir)))
+    buffer.seek(0)
+
+    return StreamingResponse(
+        buffer,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{job_id}.zip"'},
+    )
