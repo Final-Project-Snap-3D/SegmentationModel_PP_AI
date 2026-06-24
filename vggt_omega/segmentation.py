@@ -144,6 +144,7 @@ def add_object_masks(
     conf: float = 0.25,
     u2net_thres: float = 0.5,
     device=None,
+    masks_debug: bool = False,
 ) -> dict:
     """Add ``predictions["object_mask"]`` using YOLO, U2Net, or both (AND).
 
@@ -173,6 +174,12 @@ def add_object_masks(
     else:
         yolo_masks = _get_yolo_masks(frame_list, yolo_checkpoint, height, width, imgsz, conf, device)
         u2net_masks = _get_u2net_masks(frame_list, u2net_checkpoint, height, width, device, u2net_thres, imgsz)
+        if masks_debug:
+            def _to_tensor(m: np.ndarray) -> torch.Tensor:
+                t = torch.from_numpy(m)
+                return t.unsqueeze(0) if has_batch_dim else t
+            predictions["yolo_mask"] = _to_tensor(yolo_masks)
+            predictions["u2net_mask"] = _to_tensor(u2net_masks)
         masks = ((yolo_masks > 0.5) & (u2net_masks > 0.5)).astype(np.float32)
 
     mask_tensor = torch.from_numpy(masks)  # (S, H, W)

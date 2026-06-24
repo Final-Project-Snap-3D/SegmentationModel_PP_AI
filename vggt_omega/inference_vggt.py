@@ -116,6 +116,12 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="If set, export each object mask as a black/white PNG into this folder.",
     )
+    parser.add_argument(
+        "--masks-debug",
+        action="store_true",
+        help="In mixed mode, also save per-frame YOLO, U2Net, and combined masks "
+             "(mask_NNN_yolo.png / mask_NNN_u2.png / mask_NNN_mix.png) to --mask-dir.",
+    )
     return parser.parse_args()
 
 
@@ -130,6 +136,7 @@ def run_inference(
     seg_u2net_checkpoint: str | None = None,
     seg_conf: float = 0.25,
     u2net_thres: float = 0.5,
+    masks_debug: bool = False,
 ) -> dict[str, torch.Tensor]:
     """Load the model and images, then return the raw predictions plus
     decoded camera extrinsics/intrinsics."""
@@ -164,6 +171,7 @@ def run_inference(
             conf=seg_conf,
             u2net_thres=u2net_thres,
             device=device,
+            masks_debug=masks_debug,
         )
 
     return predictions
@@ -188,6 +196,7 @@ def main() -> None:
         seg_u2net_checkpoint=args.seg_u2net_checkpoint,
         seg_conf=args.seg_conf,
         u2net_thres=args.u2net_thres,
+        masks_debug=args.masks_debug,
     )
 
     print(f"Processed {len(args.images)} image(s):")
