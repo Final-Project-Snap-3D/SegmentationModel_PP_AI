@@ -33,6 +33,7 @@ from vggt_omega.api import constants
 from vggt_omega.inference_vggt import run_inference
 from vggt_omega.visualize_predictions import (
     export_depth_pngs,
+    export_mesh,
     export_object_mask_pngs,
     export_point_cloud_ply,
     to_numpy_predictions,
@@ -55,7 +56,7 @@ _INFERENCE_LOCK = threading.Lock()
 # ---------------------------------------------------------------------------
 class ArtifactInfo(BaseModel):
     name: str
-    type: str  # "point_cloud" | "depth_map" | "object_mask"
+    type: str  # "mesh" | "point_cloud" | "depth_map" | "object_mask"
     url: str
 
 
@@ -193,7 +194,20 @@ def inference(
     ),
     conf_thres: float = Form(
         constants.DEFAULT_CONF_THRES,
-        description="Confidence percentile threshold for PLY point filtering.",
+        description="Confidence percentile threshold for point filtering.",
+    ),
+    export_format: str = Form(
+        "mesh",
+        description=(
+            "'mesh' (default) reconstructs a surface mesh ready for Blender / "
+            "3D printing, or 'points' returns the raw point cloud."
+        ),
+    ),
+    mesh_format: str = Form(
+        "obj", description="File format for the mesh artifact: 'obj', 'stl' or 'ply'."
+    ),
+    poisson_depth: int = Form(
+        9, description="Octree depth for Poisson surface reconstruction (mesh only)."
     ),
     segment: bool = Form(
         False,
@@ -210,7 +224,7 @@ def inference(
     """Run VGGT-Omega inference over the uploaded images.
 
     Returns metadata, the output tensor shapes and download URLs for the
-    generated artifacts (point cloud + optional depth / mask PNGs).
+    generated artifacts (mesh or point cloud + optional depth / mask PNGs).
     """
     _check_device_ready()
     _validate_uploads(images)
@@ -218,6 +232,14 @@ def inference(
     if mode not in ("balanced", "max_size"):
         raise HTTPException(
             status_code=422, detail="mode must be 'balanced' or 'max_size'."
+        )
+    if export_format not in ("mesh", "points"):
+        raise HTTPException(
+            status_code=422, detail="export_format must be 'mesh' or 'points'."
+        )
+    if export_format == "mesh" and mesh_format not in ("obj", "stl", "ply"):
+        raise HTTPException(
+            status_code=422, detail="mesh_format must be 'obj', 'stl' or 'ply'."
         )
     if not constants.VGGT_CHECKPOINT.is_file():
         raise HTTPException(
@@ -259,15 +281,31 @@ def inference(
 
     artifacts: List[ArtifactInfo] = []
 
-    ply_path = job_dir / "scene.ply"
-    export_point_cloud_ply(predictions_np, str(ply_path), conf_thres=conf_thres)
-    artifacts.append(
-        ArtifactInfo(
-            name="scene.ply",
-            type="point_cloud",
-            url=f"/api/v1/jobs/{job_id}/files/scene.ply",
+    if export_format == "mesh":
+        scene_name = f"scene.{mesh_format}"
+        export_mesh(
+            predictions_np,
+            str(job_dir / scene_name),
+            conf_thres=conf_thres,
+            poisson_depth=poisson_depth,
         )
-    )
+        artifacts.append(
+            ArtifactInfo(
+                name=scene_name,
+                type="mesh",
+                url=f"/api/v1/jobs/{job_id}/files/{scene_name}",
+            )
+        )
+    else:
+        ply_path = job_dir / "scene.ply"
+        export_point_cloud_ply(predictions_np, str(ply_path), conf_thres=conf_thres)
+        artifacts.append(
+            ArtifactInfo(
+                name="scene.ply",
+                type="point_cloud",
+                url=f"/api/v1/jobs/{job_id}/files/scene.ply",
+            )
+        )
 
     if export_depth:
         depth_dir = job_dir / "depth"

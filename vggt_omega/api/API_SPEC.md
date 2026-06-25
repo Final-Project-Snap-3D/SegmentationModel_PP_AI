@@ -2,8 +2,9 @@
 
 HTTP service that wraps `vggt_omega/inference_vggt.py`. It accepts a **variable
 number of images** in a single multipart request, runs the VGGT-Omega forward
-pass, and returns a 3D point cloud (PLY) plus optional depth and object-mask
-PNGs.
+pass, and returns by default a reconstructed **surface mesh** (`.obj`/`.stl`/`.ply`,
+ready for Blender or 3D printing), or optionally the raw 3D point cloud (PLY),
+plus optional depth and object-mask PNGs.
 
 - **Base URL:** `http://<host>:8000`
 - **Version:** `1.0.0`
@@ -67,14 +68,17 @@ Run inference over the uploaded images.
 
 | Field          | Type            | Required | Default      | Description                                                                 |
 | -------------- | --------------- | -------- | ------------ | --------------------------------------------------------------------------- |
-| `images`       | file[]          | yes      | —            | One or more images. Repeat the `images` field once per file. 1‒`MAX_IMAGES`.|
-| `resolution`   | int             | no       | `512`        | Preprocessing resolution; must be a multiple of 16.                         |
-| `mode`         | string          | no       | `balanced`   | `balanced` or `max_size`.                                                    |
-| `conf_thres`   | float           | no       | `20.0`       | Confidence percentile threshold for PLY point filtering.                    |
-| `segment`      | bool            | no       | `false`      | Run YOLO-seg; keep only the segmented object in the point cloud.            |
-| `seg_conf`     | float           | no       | `0.25`       | YOLO detection confidence threshold (used when `segment=true`).            |
-| `export_depth` | bool            | no       | `false`      | Also export per-frame colorized depth PNGs.                                  |
-| `export_masks` | bool            | no       | `false`      | Also export per-frame object-mask PNGs (requires `segment=true`).           |
+| `images`        | file[]          | yes      | —            | One or more images. Repeat the `images` field once per file. 1‒`MAX_IMAGES`.|
+| `resolution`    | int             | no       | `512`        | Preprocessing resolution; must be a multiple of 16.                         |
+| `mode`          | string          | no       | `balanced`   | `balanced` or `max_size`.                                                    |
+| `conf_thres`    | float           | no       | `20.0`       | Confidence percentile threshold for point filtering.                       |
+| `export_format` | string          | no       | `mesh`       | `mesh` (reconstructed surface, Blender/3D-print ready) or `points` (raw point cloud). |
+| `mesh_format`   | string          | no       | `obj`        | `obj`, `stl` or `ply`; file format of the mesh artifact (used when `export_format=mesh`). |
+| `poisson_depth` | int             | no       | `9`          | Octree depth for Poisson surface reconstruction (used when `export_format=mesh`). |
+| `segment`       | bool            | no       | `false`      | Run YOLO-seg; keep only the segmented object in the cloud/mesh.            |
+| `seg_conf`      | float           | no       | `0.25`       | YOLO detection confidence threshold (used when `segment=true`).            |
+| `export_depth`  | bool            | no       | `false`      | Also export per-frame colorized depth PNGs.                                  |
+| `export_masks`  | bool            | no       | `false`      | Also export per-frame object-mask PNGs (requires `segment=true`).           |
 
 **Accepted image extensions:** `.jpg .jpeg .png .bmp .tif .tiff .webp .heic .heif`
 
@@ -93,7 +97,7 @@ Run inference over the uploaded images.
     "intrinsics": [1, 3, 3, 3]
   },
   "artifacts": [
-    { "name": "scene.ply",        "type": "point_cloud", "url": "/api/v1/jobs/8f1c.../files/scene.ply" },
+    { "name": "scene.obj",        "type": "mesh",        "url": "/api/v1/jobs/8f1c.../files/scene.obj" },
     { "name": "depth/depth_000.png", "type": "depth_map",  "url": "/api/v1/jobs/8f1c.../files/depth/depth_000.png" }
   ],
   "archive_url": "/api/v1/jobs/8f1c.../archive"
@@ -101,7 +105,10 @@ Run inference over the uploaded images.
 ```
 
 The actual tensor `shapes` depend on image count and resolution; the values
-above are illustrative. `object_mask` only appears when `segment=true`.
+above are illustrative. `object_mask` only appears when `segment=true`. The
+first artifact is `scene.<mesh_format>` (type `"mesh"`) when
+`export_format=mesh` (default), or `scene.ply` (type `"point_cloud"`) when
+`export_format=points`.
 
 #### Error responses
 
@@ -143,7 +150,7 @@ Readiness probe. Returns device info and whether the checkpoints are present.
 
 ## Examples
 
-### Minimal — two images, default settings
+### Minimal — two images, default settings (returns a mesh)
 
 ```bash
 curl -X POST http://localhost:8000/api/v1/inference \
@@ -151,7 +158,16 @@ curl -X POST http://localhost:8000/api/v1/inference \
   -F "images=@imageB.png"
 ```
 
-### Full — segmentation + depth + mask export
+### Raw point cloud instead of a mesh
+
+```bash
+curl -X POST http://localhost:8000/api/v1/inference \
+  -F "images=@imageA.png" \
+  -F "images=@imageB.png" \
+  -F "export_format=points"
+```
+
+### Full — mesh + segmentation + depth + mask export
 
 ```bash
 curl -X POST http://localhost:8000/api/v1/inference \
@@ -161,16 +177,18 @@ curl -X POST http://localhost:8000/api/v1/inference \
   -F "resolution=512" \
   -F "mode=balanced" \
   -F "conf_thres=20" \
+  -F "export_format=mesh" \
+  -F "mesh_format=stl" \
   -F "segment=true" \
   -F "seg_conf=0.25" \
   -F "export_depth=true" \
   -F "export_masks=true"
 ```
 
-### Download the resulting point cloud
+### Download the resulting mesh
 
 ```bash
-curl -OJ http://localhost:8000/api/v1/jobs/<job_id>/files/scene.ply
+curl -OJ http://localhost:8000/api/v1/jobs/<job_id>/files/scene.obj
 # or grab everything at once:
 curl -OJ http://localhost:8000/api/v1/jobs/<job_id>/archive
 ```
@@ -181,13 +199,13 @@ curl -OJ http://localhost:8000/api/v1/jobs/<job_id>/archive
 import requests
 
 files = [("images", open(p, "rb")) for p in ["a.jpg", "b.jpg", "c.jpg"]]
-data = {"segment": "true", "export_depth": "true"}
+data = {"mesh_format": "obj", "export_depth": "true"}
 r = requests.post("http://localhost:8000/api/v1/inference", files=files, data=data)
 r.raise_for_status()
 job = r.json()
 
-ply = requests.get(f"http://localhost:8000{job['artifacts'][0]['url']}")
-open("scene.ply", "wb").write(ply.content)
+mesh = requests.get(f"http://localhost:8000{job['artifacts'][0]['url']}")
+open("scene.obj", "wb").write(mesh.content)
 ```
 
 ---

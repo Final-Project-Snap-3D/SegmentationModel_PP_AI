@@ -10,12 +10,20 @@
 The model forward pass relies on ``torch.autocast(device_type="cuda", ...)``,
 so a CUDA device is required.
 
+By default the output is a reconstructed surface mesh (Poisson), ready for
+Blender or 3D printing. Pass --export-format points for the raw point cloud.
+
 Example
 -------
     python -m vggt_omega.inference_vggt \
         --checkpoint path/to/vggt_omega_1b_512.pt \
         --images path/to/imageA.png path/to/imageB.png path/to/imageC.png \
-        --output predictions.pt
+        --output scene.obj
+
+    python -m vggt_omega.inference_vggt \
+        --checkpoint path/to/vggt_omega_1b_512.pt \
+        --images path/to/imageA.png path/to/imageB.png path/to/imageC.png \
+        --export-format points --output scene.ply
 """
 
 import argparse
@@ -28,7 +36,9 @@ from vggt_omega.segmentation import add_object_masks
 from vggt_omega.utils.load_fn import load_and_preprocess_images
 from vggt_omega.utils.pose_enc import encoding_to_camera
 from vggt_omega.visualize_predictions import (
+    MESH_EXTENSIONS,
     export_depth_pngs,
+    export_mesh,
     export_object_mask_pngs,
     export_point_cloud_ply,
     to_numpy_predictions,
@@ -69,19 +79,37 @@ def parse_args() -> argparse.Namespace:
         help="Torch device to run on (default: cuda).",
     )
     parser.add_argument(
+        "--export-format",
+        choices=["mesh", "points"],
+        default="mesh",
+        help=(
+            "Export a reconstructed surface mesh (default, for Blender / 3D "
+            "printing) or the raw point cloud."
+        ),
+    )
+    parser.add_argument(
         "-o",
         "--output",
-        default="scene.ply",
+        default=None,
         help=(
-            "Output path. A .ply extension exports a point cloud; a .pt/.pth "
-            "extension saves the raw prediction tensors (default: scene.ply)."
+            "Output path. A .pt/.pth extension always saves the raw prediction "
+            "tensors. Otherwise: .obj/.stl/.ply for --export-format mesh "
+            "(default: scene.obj), or .ply for --export-format points "
+            "(default: scene.ply)."
         ),
     )
     parser.add_argument(
         "--conf-thres",
         type=float,
         default=20.0,
-        help="Confidence percentile threshold for point filtering in PLY export (default: 20).",
+        help="Confidence percentile threshold for point filtering (default: 20).",
+    )
+    parser.add_argument(
+        "--poisson-depth",
+        type=int,
+        default=9,
+        help="Octree depth for Poisson surface reconstruction (default: 9; "
+        "higher = more detail, slower, used only with --export-format mesh).",
     )
     parser.add_argument(
         "--depth-dir",
@@ -181,26 +209,43 @@ def main() -> None:
         if isinstance(value, torch.Tensor):
             print(f"  {key:<14} {tuple(value.shape)}")
 
-    output_ext = os.path.splitext(args.output)[1].lower()
+    output_path = args.output or ("scene.obj" if args.export_format == "mesh" else "scene.ply")
+    output_ext = os.path.splitext(output_path)[1].lower()
+
     if output_ext in (".pt", ".pth"):
         cpu_predictions = {
             key: value.detach().cpu() if isinstance(value, torch.Tensor) else value
             for key, value in predictions.items()
         }
-        torch.save(cpu_predictions, args.output)
-        print(f"Saved predictions to {args.output}")
-    elif output_ext == ".ply":
-        predictions_np = to_numpy_predictions(predictions)
-        export_point_cloud_ply(predictions_np, args.output, conf_thres=args.conf_thres)
-        print(f"Saved PLY point cloud to {args.output}")
-        if args.depth_dir is not None:
-            export_depth_pngs(predictions_np, args.depth_dir)
-        if args.mask_dir is not None:
-            export_object_mask_pngs(predictions_np, args.mask_dir)
-    else:
-        raise ValueError(
-            f"Unsupported --output extension '{output_ext}'. Use .ply or .pt/.pth."
+        torch.save(cpu_predictions, output_path)
+        print(f"Saved predictions to {output_path}")
+        return
+
+    predictions_np = to_numpy_predictions(predictions)
+
+    if args.export_format == "mesh":
+        if output_ext not in MESH_EXTENSIONS:
+            raise ValueError(
+                f"Unsupported --output extension '{output_ext}' for --export-format mesh. "
+                f"Use one of {sorted(MESH_EXTENSIONS)} (or .pt/.pth for raw tensors)."
+            )
+        export_mesh(
+            predictions_np, output_path, conf_thres=args.conf_thres, poisson_depth=args.poisson_depth
         )
+        print(f"Saved mesh to {output_path}")
+    else:
+        if output_ext != ".ply":
+            raise ValueError(
+                f"Unsupported --output extension '{output_ext}' for --export-format points. "
+                "Use .ply (or .pt/.pth for raw tensors)."
+            )
+        export_point_cloud_ply(predictions_np, output_path, conf_thres=args.conf_thres)
+        print(f"Saved PLY point cloud to {output_path}")
+
+    if args.depth_dir is not None:
+        export_depth_pngs(predictions_np, args.depth_dir)
+    if args.mask_dir is not None:
+        export_object_mask_pngs(predictions_np, args.mask_dir)
 
 
 if __name__ == "__main__":

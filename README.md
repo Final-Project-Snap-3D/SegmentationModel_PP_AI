@@ -183,7 +183,7 @@ YOLO loga `metrics/mAP50(M)` i `metrics/mAP50-95(M)` (mAP sobre màscares) a `ru
 
 ## API d'inferència VGGT-Omega
 
-Servei HTTP (FastAPI) que envolta `vggt_omega/inference_vggt.py`. Accepta una quantitat variable d'imatges en una sola petició, executa la inferència i retorna una núvol de punts PLY (i opcionalment PNGs de depth/màscares). L'especificació completa (camps, respostes, errors, exemples) és a [`vggt_omega/api/API_SPEC.md`](vggt_omega/api/API_SPEC.md).
+Servei HTTP (FastAPI) que envolta `vggt_omega/inference_vggt.py`. Accepta una quantitat variable d'imatges en una sola petició, executa la inferència i retorna per defecte una **mesh reconstruïda** (`.obj`/`.stl`/`.ply`, llesta per Blender o impressió 3D), o opcionalment la núvol de punts en brut (i opcionalment PNGs de depth/màscares). L'especificació completa (camps, respostes, errors, exemples) és a [`vggt_omega/api/API_SPEC.md`](vggt_omega/api/API_SPEC.md).
 
 > ⚠️ El forward pass usa `torch.autocast(device_type="cuda")`, així que **cal una GPU CUDA**. En un host sense CUDA l'endpoint d'inferència retorna `503`.
 
@@ -220,11 +220,19 @@ Docs interactives (Swagger UI) a `http://localhost:8000/docs`.
 
 ```bash
 # Inferència sobre N imatges -> retorna JSON amb les URLs de descàrrega
+# (export_format=mesh és el valor per defecte; aquí es passa explícit)
 curl -X POST http://localhost:8000/api/v1/inference \
   -F "images=@imageA.jpg" \
   -F "images=@imageB.jpg" \
+  -F "export_format=mesh" -F "mesh_format=obj" \
   -F "segment=true" -F "export_depth=true"
 
-# Descarregar el núvol de punts del job retornat
+# Descarregar la mesh del job retornat
+curl -OJ http://localhost:8000/api/v1/jobs/<job_id>/files/scene.obj
+
+# Alternativa: núvol de punts en brut (sense reconstrucció de superfície)
+curl -X POST http://localhost:8000/api/v1/inference \
+  -F "images=@imageA.jpg" -F "images=@imageB.jpg" \
+  -F "export_format=points"
 curl -OJ http://localhost:8000/api/v1/jobs/<job_id>/files/scene.ply
 ```

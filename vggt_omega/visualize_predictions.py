@@ -7,15 +7,21 @@
 
 """Visualize a predictions.pt file produced by inference_vggt.py.
 
-It builds a PLY point cloud from the depth maps and, optionally, exports each
-depth map as a colorized PNG.
+By default it reconstructs a surface mesh (Poisson) from the depth-unprojected
+point cloud, ready for Blender / 3D printing. Pass --export-format points to
+get the raw PLY point cloud instead. Depth/mask PNGs can also be exported.
 
 Example
 -------
     python -m vggt_omega.visualize_predictions \
         --predictions predictions.pt \
-        --output scene.ply \
+        --output scene.obj \
         --depth-dir depth_maps
+
+    python -m vggt_omega.visualize_predictions \
+        --predictions predictions.pt \
+        --export-format points \
+        --output scene.ply
 """
 
 import argparse
@@ -25,6 +31,8 @@ import numpy as np
 import torch
 
 from vggt_omega.visual_util import predictions_to_point_cloud
+
+MESH_EXTENSIONS = {".obj", ".stl", ".ply"}
 
 
 def parse_args() -> argparse.Namespace:
@@ -36,16 +44,36 @@ def parse_args() -> argparse.Namespace:
         help="Path to the predictions .pt file (default: predictions.pt).",
     )
     parser.add_argument(
+        "--export-format",
+        choices=["mesh", "points"],
+        default="mesh",
+        help=(
+            "Export a reconstructed surface mesh (default, for Blender / 3D "
+            "printing) or the raw point cloud."
+        ),
+    )
+    parser.add_argument(
         "-o",
         "--output",
-        default="scene.ply",
-        help="Output PLY point cloud path (default: scene.ply).",
+        default=None,
+        help=(
+            "Output path. For --export-format mesh: .obj/.stl/.ply "
+            "(default: scene.obj). For --export-format points: .ply "
+            "(default: scene.ply)."
+        ),
     )
     parser.add_argument(
         "--conf-thres",
         type=float,
         default=20.0,
         help="Confidence percentile threshold for point filtering (default: 20).",
+    )
+    parser.add_argument(
+        "--poisson-depth",
+        type=int,
+        default=9,
+        help="Octree depth for Poisson surface reconstruction (default: 9; "
+        "higher = more detail, slower, used only with --export-format mesh).",
     )
     parser.add_argument(
         "--depth-dir",
@@ -124,6 +152,60 @@ def export_point_cloud_ply(predictions_np: dict, output_path: str, conf_thres: f
     trimesh.PointCloud(vertices=vertices, colors=colors).export(output_path)
 
 
+def export_mesh(
+    predictions_np: dict,
+    output_path: str,
+    conf_thres: float = 20.0,
+    poisson_depth: int = 9,
+    density_quantile: float = 0.05,
+) -> None:
+    """Reconstruct a surface mesh from the point cloud and export it
+    (.obj/.stl/.ply) for use in Blender or 3D printing.
+
+    Uses Poisson surface reconstruction, which needs per-point normals and
+    tends to extrapolate a closed surface beyond the actual data support; the
+    low-density tail of the result is trimmed away to remove that bulge, then
+    any boundary holes opened up by the trim are re-closed. This gets most
+    inputs to a watertight, slicer-ready mesh, but isn't a topology guarantee
+    for every point cloud — sparse or noisy captures may still need a manual
+    repair pass (e.g. Blender's 3D-Print Toolbox "Make Manifold") before
+    printing.
+    """
+    import open3d as o3d
+
+    vertices, colors = predictions_to_point_cloud(predictions_np, conf_thres=conf_thres)
+
+    pcd = o3d.geometry.PointCloud()
+    pcd.points = o3d.utility.Vector3dVector(vertices.astype(np.float64))
+    pcd.colors = o3d.utility.Vector3dVector(colors.astype(np.float64) / 255.0)
+
+    pcd.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.1, max_nn=30))
+    pcd.orient_normals_consistent_tangent_plane(30)
+
+    mesh, densities = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(
+        pcd, depth=poisson_depth
+    )
+
+    densities = np.asarray(densities)
+    low_density_vertices = densities < np.quantile(densities, density_quantile)
+    mesh.remove_vertices_by_mask(low_density_vertices)
+
+    mesh.remove_degenerate_triangles()
+    mesh.remove_duplicated_triangles()
+    mesh.remove_duplicated_vertices()
+    mesh.remove_non_manifold_edges()
+
+    # Trimming the low-density tail above opens up boundary holes wherever the
+    # source point cloud didn't actually cover the surface (e.g. the unseen
+    # back side in a single/few-view capture). Close them so the result is
+    # watertight and safe to send to a slicer.
+    tensor_mesh = o3d.t.geometry.TriangleMesh.from_legacy(mesh)
+    tensor_mesh = tensor_mesh.fill_holes()
+    mesh = tensor_mesh.to_legacy()
+
+    o3d.io.write_triangle_mesh(output_path, mesh)
+
+
 def export_depth_pngs(predictions_np: dict, depth_dir: str) -> None:
     import matplotlib.cm as cm
 
@@ -166,12 +248,24 @@ def main() -> None:
     predictions = torch.load(args.predictions, map_location="cpu")
     predictions_np = to_numpy_predictions(predictions)
 
-    output_ext = os.path.splitext(args.output)[1].lower()
-    if output_ext != ".ply":
-        raise ValueError(f"Unsupported --output extension '{output_ext}'. Use .ply.")
+    output_path = args.output or ("scene.obj" if args.export_format == "mesh" else "scene.ply")
+    output_ext = os.path.splitext(output_path)[1].lower()
 
-    export_point_cloud_ply(predictions_np, args.output, conf_thres=args.conf_thres)
-    print(f"Saved PLY point cloud to {args.output}")
+    if args.export_format == "mesh":
+        if output_ext not in MESH_EXTENSIONS:
+            raise ValueError(
+                f"Unsupported --output extension '{output_ext}' for --export-format mesh. "
+                f"Use one of {sorted(MESH_EXTENSIONS)}."
+            )
+        export_mesh(
+            predictions_np, output_path, conf_thres=args.conf_thres, poisson_depth=args.poisson_depth
+        )
+        print(f"Saved mesh to {output_path}")
+    else:
+        if output_ext != ".ply":
+            raise ValueError(f"Unsupported --output extension '{output_ext}' for --export-format points. Use .ply.")
+        export_point_cloud_ply(predictions_np, output_path, conf_thres=args.conf_thres)
+        print(f"Saved PLY point cloud to {output_path}")
 
     if args.depth_dir is not None:
         export_depth_pngs(predictions_np, args.depth_dir)
