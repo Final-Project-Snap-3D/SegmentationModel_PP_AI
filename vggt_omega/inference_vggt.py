@@ -135,6 +135,12 @@ def parse_args() -> argparse.Namespace:
              "A large value (e.g. 21–51) removes small spurious regions and thin connections, "
              "keeping only the main compact object.",
     )
+    parser.add_argument(
+        "--keep-largest",
+        action="store_true",
+        help="After masking, keep only the largest connected component per frame. "
+             "Discards all secondary detections.",
+    )
     return parser.parse_args()
 
 
@@ -152,6 +158,7 @@ def run_inference(
     masks_debug: bool = False,
     morph_open: bool = False,
     morph_kernel: int = 21,
+    keep_largest: bool = False,
 ) -> dict[str, torch.Tensor]:
     """Load the model and images, then return the raw predictions plus
     decoded camera extrinsics/intrinsics."""
@@ -189,6 +196,7 @@ def run_inference(
             masks_debug=masks_debug,
             morph_open=morph_open,
             morph_kernel=morph_kernel,
+            keep_largest=keep_largest,
         )
 
     return predictions
@@ -216,6 +224,7 @@ def main() -> None:
         masks_debug=args.masks_debug,
         morph_open=args.morph_open,
         morph_kernel=args.morph_kernel,
+        keep_largest=args.keep_largest,
     )
 
     print(f"Processed {len(args.images)} image(s):")

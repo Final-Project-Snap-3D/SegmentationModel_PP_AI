@@ -43,6 +43,30 @@ def _apply_morphological_open(masks: np.ndarray, kernel_size: int) -> np.ndarray
     return opened
 
 
+def _keep_largest_component(masks: np.ndarray) -> np.ndarray:
+    """Keep only the largest connected component per frame in *masks*.
+
+    Uses 8-connectivity. If a frame has no foreground pixels the output
+    frame is left all-zero.
+
+    Args:
+        masks: ``(S, H, W)`` binary float32 array.
+
+    Returns:
+        ``(S, H, W)`` binary float32 array with at most one component per frame.
+    """
+    result = np.zeros_like(masks)
+    for i, frame in enumerate(masks):
+        uint8 = (frame > 0.5).astype(np.uint8)
+        n_labels, labels, stats, _ = cv2.connectedComponentsWithStats(uint8, connectivity=8)
+        if n_labels <= 1:  # only background label (0), no foreground
+            continue
+        # stats rows: [x, y, w, h, area]; label 0 is always background
+        largest_label = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+        result[i] = (labels == largest_label).astype(np.float32)
+    return result
+
+
 def _prepare_frame_list(frames: torch.Tensor) -> tuple[list, int, int]:
     """Convert a (S, 3, H, W) float [0,1] tensor to a BGR uint8 list plus (H, W)."""
     num_frames, _, height, width = frames.shape
@@ -167,6 +191,7 @@ def add_object_masks(
     masks_debug: bool = False,
     morph_open: bool = False,
     morph_kernel: int = 21,
+    keep_largest: bool = False,
 ) -> dict:
     """Add ``predictions["object_mask"]`` using YOLO, U2Net, or both (AND).
 
@@ -206,6 +231,9 @@ def add_object_masks(
 
     if morph_open:
         masks = _apply_morphological_open(masks, morph_kernel)
+
+    if keep_largest:
+        masks = _keep_largest_component(masks)
 
     mask_tensor = torch.from_numpy(masks)  # (S, H, W)
     if has_batch_dim:
