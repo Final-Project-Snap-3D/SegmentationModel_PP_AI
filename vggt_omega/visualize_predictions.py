@@ -144,20 +144,43 @@ def export_depth_pngs(predictions_np: dict, depth_dir: str) -> None:
 
 
 def export_object_mask_pngs(predictions_np: dict, mask_dir: str) -> None:
-    """Save each frame's binary object mask as a black/white PNG."""
+    """Save each frame's binary object mask(s) as black/white PNGs.
+
+    In normal mode saves ``mask_NNN.png`` (the final object mask).
+    In debug mode (when ``yolo_mask`` and ``u2net_mask`` are present alongside
+    ``object_mask``) saves three files per frame:
+    ``mask_NNN_yolo.png``, ``mask_NNN_u2.png``, and ``mask_NNN_mix.png``.
+    """
     from PIL import Image
 
-    masks = predictions_np.get("object_mask")
-    if masks is None:
+    final_masks = predictions_np.get("object_mask")
+    if final_masks is None:
         print("No object_mask in predictions; run inference with --seg-checkpoint to produce one.")
         return
 
     os.makedirs(mask_dir, exist_ok=True)
-    masks = np.asarray(masks)  # (num_frames, H, W)
-    for i, frame in enumerate(masks):
-        img = (frame > 0.5).astype(np.uint8) * 255
-        Image.fromarray(img).save(os.path.join(mask_dir, f"mask_{i:03d}.png"))
-    print(f"Saved {len(masks)} object mask(s) to {mask_dir}/")
+    final_masks = np.asarray(final_masks)  # (num_frames, H, W)
+
+    yolo_masks = predictions_np.get("yolo_mask")
+    u2net_masks = predictions_np.get("u2net_mask")
+    debug = yolo_masks is not None and u2net_masks is not None
+
+    if debug:
+        yolo_masks = np.asarray(yolo_masks)
+        u2net_masks = np.asarray(u2net_masks)
+        for i in range(len(final_masks)):
+            def _save(arr: np.ndarray, suffix: str) -> None:
+                img = (arr > 0.5).astype(np.uint8) * 255
+                Image.fromarray(img).save(os.path.join(mask_dir, f"mask_{i:03d}_{suffix}.png"))
+            _save(yolo_masks[i], "yolo")
+            _save(u2net_masks[i], "u2")
+            _save(final_masks[i], "mix")
+        print(f"Saved {len(final_masks)} frame(s) × 3 debug mask(s) to {mask_dir}/")
+    else:
+        for i, frame in enumerate(final_masks):
+            img = (frame > 0.5).astype(np.uint8) * 255
+            Image.fromarray(img).save(os.path.join(mask_dir, f"mask_{i:03d}.png"))
+        print(f"Saved {len(final_masks)} object mask(s) to {mask_dir}/")
 
 
 def main() -> None:

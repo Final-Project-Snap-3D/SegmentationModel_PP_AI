@@ -95,6 +95,17 @@ def parse_args() -> argparse.Namespace:
         "segmented object is kept in the point cloud; the background is dropped.",
     )
     parser.add_argument(
+        "--seg-u2net-checkpoint",
+        default=None,
+        help="Path to a U2Net checkpoint (e.g. u2net.pt). If set, U2Net is used for object segmentation.",
+    )
+    parser.add_argument(
+        "--u2net-thres",
+        type=float,
+        default=0.5,
+        help="Binarisation threshold for the U2Net saliency map (default: 0.5).",
+    )
+    parser.add_argument(
         "--seg-conf",
         type=float,
         default=0.25,
@@ -104,6 +115,12 @@ def parse_args() -> argparse.Namespace:
         "--mask-dir",
         default=None,
         help="If set, export each object mask as a black/white PNG into this folder.",
+    )
+    parser.add_argument(
+        "--masks-debug",
+        action="store_true",
+        help="In mixed mode, also save per-frame YOLO, U2Net, and combined masks "
+             "(mask_NNN_yolo.png / mask_NNN_u2.png / mask_NNN_mix.png) to --mask-dir.",
     )
     return parser.parse_args()
 
@@ -116,7 +133,10 @@ def run_inference(
     mode: str = "balanced",
     device: str = "cuda",
     seg_checkpoint: str | None = None,
+    seg_u2net_checkpoint: str | None = None,
     seg_conf: float = 0.25,
+    u2net_thres: float = 0.5,
+    masks_debug: bool = False,
 ) -> dict[str, torch.Tensor]:
     """Load the model and images, then return the raw predictions plus
     decoded camera extrinsics/intrinsics."""
@@ -142,8 +162,17 @@ def run_inference(
     predictions["camera_tokens"] = camera_and_register_tokens[:, :, :1]
     predictions["registers"] = camera_and_register_tokens[:, :, 1:]
 
-    if seg_checkpoint is not None:
-        add_object_masks(predictions, seg_checkpoint, imgsz=image_resolution, conf=seg_conf, device=device)
+    if seg_checkpoint is not None or seg_u2net_checkpoint is not None:
+        add_object_masks(
+            predictions,
+            yolo_checkpoint=seg_checkpoint,
+            u2net_checkpoint=seg_u2net_checkpoint,
+            imgsz=image_resolution,
+            conf=seg_conf,
+            u2net_thres=u2net_thres,
+            device=device,
+            masks_debug=masks_debug,
+        )
 
     return predictions
 
@@ -164,7 +193,10 @@ def main() -> None:
         mode=args.mode,
         device=args.device,
         seg_checkpoint=args.seg_checkpoint,
+        seg_u2net_checkpoint=args.seg_u2net_checkpoint,
         seg_conf=args.seg_conf,
+        u2net_thres=args.u2net_thres,
+        masks_debug=args.masks_debug,
     )
 
     print(f"Processed {len(args.images)} image(s):")
