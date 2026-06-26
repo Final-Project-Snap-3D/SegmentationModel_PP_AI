@@ -130,8 +130,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--morph-kernel",
         type=int,
-        default=5,
-        help="Size of the elliptical structuring element for morphological opening (default: 5).",
+        default=21,
+        help="Size of the elliptical structuring element for morphological opening (default: 21). "
+             "A large value (e.g. 21–51) removes small spurious regions and thin connections, "
+             "keeping only the main compact object.",
     )
     return parser.parse_args()
 
@@ -149,7 +151,7 @@ def run_inference(
     u2net_thres: float = 0.5,
     masks_debug: bool = False,
     morph_open: bool = False,
-    morph_kernel: int = 5,
+    morph_kernel: int = 21,
 ) -> dict[str, torch.Tensor]:
     """Load the model and images, then return the raw predictions plus
     decoded camera extrinsics/intrinsics."""

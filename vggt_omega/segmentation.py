@@ -166,7 +166,7 @@ def add_object_masks(
     device=None,
     masks_debug: bool = False,
     morph_open: bool = False,
-    morph_kernel: int = 5,
+    morph_kernel: int = 21,
 ) -> dict:
     """Add ``predictions["object_mask"]`` using YOLO, U2Net, or both (AND).
 
