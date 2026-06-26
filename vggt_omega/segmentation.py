@@ -23,6 +23,26 @@ import torch
 # Internal helpers
 # ---------------------------------------------------------------------------
 
+def _apply_morphological_open(masks: np.ndarray, kernel_size: int) -> np.ndarray:
+    """Apply morphological opening (erode then dilate) to each frame in *masks*.
+
+    Args:
+        masks: ``(S, H, W)`` binary float32 array.
+        kernel_size: side length of the square structuring element (must be odd).
+
+    Returns:
+        Opened ``(S, H, W)`` binary float32 array.
+    """
+    kernel = cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE, (kernel_size, kernel_size)
+    )
+    opened = np.empty_like(masks)
+    for i, frame in enumerate(masks):
+        uint8 = (frame > 0.5).astype(np.uint8) * 255
+        opened[i] = (cv2.morphologyEx(uint8, cv2.MORPH_OPEN, kernel) > 127).astype(np.float32)
+    return opened
+
+
 def _prepare_frame_list(frames: torch.Tensor) -> tuple[list, int, int]:
     """Convert a (S, 3, H, W) float [0,1] tensor to a BGR uint8 list plus (H, W)."""
     num_frames, _, height, width = frames.shape
@@ -145,6 +165,8 @@ def add_object_masks(
     u2net_thres: float = 0.5,
     device=None,
     masks_debug: bool = False,
+    morph_open: bool = False,
+    morph_kernel: int = 5,
 ) -> dict:
     """Add ``predictions["object_mask"]`` using YOLO, U2Net, or both (AND).
 
@@ -181,6 +203,9 @@ def add_object_masks(
             predictions["yolo_mask"] = _to_tensor(yolo_masks)
             predictions["u2net_mask"] = _to_tensor(u2net_masks)
         masks = ((yolo_masks > 0.5) & (u2net_masks > 0.5)).astype(np.float32)
+
+    if morph_open:
+        masks = _apply_morphological_open(masks, morph_kernel)
 
     mask_tensor = torch.from_numpy(masks)  # (S, H, W)
     if has_batch_dim:

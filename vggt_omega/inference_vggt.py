@@ -122,6 +122,17 @@ def parse_args() -> argparse.Namespace:
         help="In mixed mode, also save per-frame YOLO, U2Net, and combined masks "
              "(mask_NNN_yolo.png / mask_NNN_u2.png / mask_NNN_mix.png) to --mask-dir.",
     )
+    parser.add_argument(
+        "--morph-open",
+        action="store_true",
+        help="Apply morphological opening to the final mask (removes small noise regions).",
+    )
+    parser.add_argument(
+        "--morph-kernel",
+        type=int,
+        default=5,
+        help="Size of the elliptical structuring element for morphological opening (default: 5).",
+    )
     return parser.parse_args()
 
 
@@ -137,6 +148,8 @@ def run_inference(
     seg_conf: float = 0.25,
     u2net_thres: float = 0.5,
     masks_debug: bool = False,
+    morph_open: bool = False,
+    morph_kernel: int = 5,
 ) -> dict[str, torch.Tensor]:
     """Load the model and images, then return the raw predictions plus
     decoded camera extrinsics/intrinsics."""
@@ -172,6 +185,8 @@ def run_inference(
             u2net_thres=u2net_thres,
             device=device,
             masks_debug=masks_debug,
+            morph_open=morph_open,
+            morph_kernel=morph_kernel,
         )
 
     return predictions
@@ -197,6 +212,8 @@ def main() -> None:
         seg_conf=args.seg_conf,
         u2net_thres=args.u2net_thres,
         masks_debug=args.masks_debug,
+        morph_open=args.morph_open,
+        morph_kernel=args.morph_kernel,
     )
 
     print(f"Processed {len(args.images)} image(s):")
