@@ -209,6 +209,11 @@ def inference(
     poisson_depth: int = Form(
         9, description="Octree depth for Poisson surface reconstruction (mesh only)."
     ),
+    mesh_method: str = Form(
+        "poisson",
+        description="Surface reconstruction method: 'poisson' (default) or 'pymeshlab' "
+                    "(Screened Poisson via PyMeshLab; falls back to poisson if unavailable).",
+    ),
     segment: bool = Form(
         False,
         description="If true, run YOLO-seg and keep only the segmented object in the cloud.",
@@ -240,6 +245,10 @@ def inference(
     if export_format == "mesh" and mesh_format not in ("obj", "stl", "ply"):
         raise HTTPException(
             status_code=422, detail="mesh_format must be 'obj', 'stl' or 'ply'."
+        )
+    if mesh_method not in ("poisson", "pymeshlab"):
+        raise HTTPException(
+            status_code=422, detail="mesh_method must be 'poisson' or 'pymeshlab'."
         )
     if not constants.VGGT_CHECKPOINT.is_file():
         raise HTTPException(
@@ -288,6 +297,7 @@ def inference(
             str(job_dir / scene_name),
             conf_thres=conf_thres,
             poisson_depth=poisson_depth,
+            method=mesh_method,
         )
         artifacts.append(
             ArtifactInfo(
@@ -296,6 +306,19 @@ def inference(
                 url=f"/api/v1/jobs/{job_id}/files/{scene_name}",
             )
         )
+        # export_mesh always writes companion .ply/.glb copies alongside the
+        # requested format so the vertex colors are viewable regardless of
+        # what was requested (.obj drops them, .ply/.glb keep them).
+        for companion_ext in (".ply", ".glb"):
+            companion_name = f"scene{companion_ext}"
+            if companion_name != scene_name and (job_dir / companion_name).exists():
+                artifacts.append(
+                    ArtifactInfo(
+                        name=companion_name,
+                        type="mesh",
+                        url=f"/api/v1/jobs/{job_id}/files/{companion_name}",
+                    )
+                )
     else:
         ply_path = job_dir / "scene.ply"
         export_point_cloud_ply(predictions_np, str(ply_path), conf_thres=conf_thres)

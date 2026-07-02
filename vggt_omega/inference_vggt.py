@@ -169,6 +169,33 @@ def parse_args() -> argparse.Namespace:
         help="After masking, keep only the largest connected component per frame. "
              "Discards all secondary detections.",
     )
+    parser.add_argument(
+        "--density-quantile",
+        type=float,
+        default=0.05,
+        help="Trim the low-density tail of the Poisson surface (default: 0.05; "
+             "raise to 0.1–0.3 to remove more invented surface).",
+    )
+    parser.add_argument(
+        "--outlier-std",
+        type=float,
+        default=2.0,
+        help="Statistical outlier removal threshold (default: 2.0; lower = more "
+             "aggressive; 0 to disable).",
+    )
+    parser.add_argument(
+        "--no-fill-holes",
+        action="store_true",
+        help="Skip hole-closing after Poisson trimming (avoids membranes on "
+             "concave / unseen surfaces).",
+    )
+    parser.add_argument(
+        "--smooth-iters",
+        type=int,
+        default=10,
+        help="Taubin smoothing iterations applied after mesh cleanup (default: 10; "
+             "0 to disable).",
+    )
     return parser.parse_args()
 
 
@@ -290,7 +317,13 @@ def main() -> None:
                 f"Use one of {sorted(MESH_EXTENSIONS)} (or .pt/.pth for raw tensors)."
             )
         export_mesh(
-            predictions_np, output_path, conf_thres=args.conf_thres, poisson_depth=args.poisson_depth
+            predictions_np, output_path,
+            conf_thres=args.conf_thres,
+            poisson_depth=args.poisson_depth,
+            density_quantile=args.density_quantile,
+            outlier_std=args.outlier_std,
+            fill_holes=not args.no_fill_holes,
+            smooth_iters=args.smooth_iters,
         )
         print(f"Saved mesh to {output_path}")
     else:

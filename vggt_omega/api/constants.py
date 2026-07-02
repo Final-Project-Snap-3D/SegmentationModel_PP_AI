@@ -27,16 +27,33 @@ def _resolve(path: str | os.PathLike) -> Path:
     return p if p.is_absolute() else (REPO_ROOT / p)
 
 
+def _first_existing(env_var: str, *candidates: str) -> Path:
+    """Resolve `env_var` if set; otherwise return the first candidate path that
+    exists (relative to repo root). Falls back to the first candidate. This
+    makes the defaults work whether the checkpoint lives in checkpoints/ or at
+    the repo root."""
+    override = os.getenv(env_var)
+    if override:
+        return _resolve(override)
+    for candidate in candidates:
+        resolved = _resolve(candidate)
+        if resolved.exists():
+            return resolved
+    return _resolve(candidates[0])
+
+
 # Main VGGT-Omega checkpoint (e.g. vggt_omega_1b_512.pt). This file is large
 # and is NOT committed to the repo: point VGGT_CHECKPOINT at wherever you keep
 # it, or drop it under checkpoints/ with the default name.
-VGGT_CHECKPOINT = _resolve(
-    os.getenv("VGGT_CHECKPOINT", "checkpoints/vggt_omega_1b_512.pt")
+VGGT_CHECKPOINT = _first_existing(
+    "VGGT_CHECKPOINT", "checkpoints/vggt_omega_1b_512.pt", "vggt_omega_1b_512.pt"
 )
 
 # Optional YOLO-seg checkpoint used to keep only the segmented object in the
-# point cloud. The repo ships yolo26s-seg.pt at its root.
-SEG_CHECKPOINT = _resolve(os.getenv("VGGT_SEG_CHECKPOINT", "yolo26s-seg.pt"))
+# point cloud. Looked up in checkpoints/ first, then at the repo root.
+SEG_CHECKPOINT = _first_existing(
+    "VGGT_SEG_CHECKPOINT", "checkpoints/yolo26s-seg.pt", "yolo26s-seg.pt"
+)
 
 # Where inference artifacts (PLY / depth / mask PNGs) are written. Each request
 # gets its own sub-folder named after the job id.

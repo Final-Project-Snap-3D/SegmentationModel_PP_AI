@@ -16,10 +16,12 @@ safetensors
 # YOLO
 ultralytics
 
-# 3D / visualization (vggt_omega visual_util & gradio demo)
+# 3D / visualization (vggt_omega visual_util & gradio demo, debug_mesh.py)
 scipy
 trimesh
 onnxruntime
+open3d>=0.18
+pymeshlab
 gradio
 requests
 matplotlib>=3.7.0

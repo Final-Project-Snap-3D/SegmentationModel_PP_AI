@@ -85,6 +85,39 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="If set, export each object mask as a black/white PNG into this folder.",
     )
+    parser.add_argument(
+        "--density-quantile",
+        type=float,
+        default=0.05,
+        help="Trim the low-density tail of the Poisson surface (default: 0.05; "
+             "raise to 0.1–0.3 to remove more invented surface).",
+    )
+    parser.add_argument(
+        "--outlier-std",
+        type=float,
+        default=2.0,
+        help="Statistical outlier removal threshold (default: 2.0; lower = more "
+             "aggressive; 0 to disable).",
+    )
+    parser.add_argument(
+        "--no-fill-holes",
+        action="store_true",
+        help="Skip hole-closing after Poisson trimming (avoids membranes on "
+             "concave / unseen surfaces).",
+    )
+    parser.add_argument(
+        "--smooth-iters",
+        type=int,
+        default=10,
+        help="Taubin smoothing iterations (default: 10; 0 to disable).",
+    )
+    parser.add_argument(
+        "--method",
+        choices=["poisson", "pymeshlab"],
+        default="poisson",
+        help="Surface reconstruction method (default: poisson). "
+             "'pymeshlab' uses Screened Poisson from PyMeshLab; falls back to poisson if unavailable.",
+    )
     return parser.parse_args()
 
 
@@ -158,62 +191,211 @@ def export_mesh(
     conf_thres: float = 20.0,
     poisson_depth: int = 9,
     density_quantile: float = 0.05,
+    outlier_std: float = 2.0,
+    fill_holes: bool = True,
+    smooth_iters: int = 10,
+    method: str = "poisson",
 ) -> None:
     """Reconstruct a surface mesh from the point cloud and export it
     (.obj/.stl/.ply) for use in Blender or 3D printing.
 
-    Uses Poisson surface reconstruction, which needs per-point normals and
-    tends to extrapolate a closed surface beyond the actual data support; the
-    low-density tail of the result is trimmed away to remove that bulge, then
-    any boundary holes opened up by the trim are re-closed. This gets most
-    inputs to a watertight, slicer-ready mesh, but isn't a topology guarantee
-    for every point cloud — sparse or noisy captures may still need a manual
-    repair pass (e.g. Blender's 3D-Print Toolbox "Make Manifold") before
-    printing.
+    ``method="poisson"`` (default): Poisson surface reconstruction (Open3D).
+    ``method="pymeshlab"``: Screened Poisson via PyMeshLab; falls back to Poisson
+    automatically if pymeshlab is unavailable.
     """
     import open3d as o3d
 
     vertices, colors = predictions_to_point_cloud(predictions_np, conf_thres=conf_thres)
+    if len(vertices) == 0:
+        raise ValueError(
+            "Empty point cloud: lower conf_thres to keep more points before meshing."
+        )
 
     pcd = o3d.geometry.PointCloud()
     pcd.points = o3d.utility.Vector3dVector(vertices.astype(np.float64))
     pcd.colors = o3d.utility.Vector3dVector(colors.astype(np.float64) / 255.0)
 
-    pcd.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.1, max_nn=30))
+    # Remove stray points (outliers) that Poisson would otherwise bridge into
+    # a spike/cone toward the origin.
+    if outlier_std > 0 and len(pcd.points) > 20:
+        pcd, _ = pcd.remove_statistical_outlier(nb_neighbors=20, std_ratio=outlier_std)
+
+    # Normal-estimation radius adapted to the cloud's scale (the previous fixed
+    # 0.1 failed when the cloud was larger/smaller than that).
+    pts = np.asarray(pcd.points)
+    diag = float(np.linalg.norm(pts.max(axis=0) - pts.min(axis=0)))
+    radius = max(diag * 0.02, 1e-6)
+    pcd.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=radius, max_nn=30))
     pcd.orient_normals_consistent_tangent_plane(30)
 
-    mesh, densities = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(
-        pcd, depth=poisson_depth
-    )
+    # ── PyMeshLab branch (Screened Poisson) ──────────────────────────────────
+    mesh = None
+    if method == "pymeshlab":
+        try:
+            import pymeshlab
 
-    densities = np.asarray(densities)
-    low_density_vertices = densities < np.quantile(densities, density_quantile)
-    mesh.remove_vertices_by_mask(low_density_vertices)
+            pts_arr = np.asarray(pcd.points)
+            nrm_arr = np.asarray(pcd.normals)
+            col_arr = np.asarray(pcd.colors)  # [0, 1]
+            col_rgba = np.hstack([col_arr, np.ones((len(col_arr), 1))])
 
-    mesh.remove_degenerate_triangles()
-    mesh.remove_duplicated_triangles()
-    mesh.remove_duplicated_vertices()
-    mesh.remove_non_manifold_edges()
+            ms = pymeshlab.MeshSet()
+            ms.add_mesh(pymeshlab.Mesh(
+                vertex_matrix=pts_arr,
+                v_normals_matrix=nrm_arr,
+                v_color_matrix=col_rgba,
+            ))
 
-    # Trimming the low-density tail above opens up boundary holes wherever the
-    # source point cloud didn't actually cover the surface (e.g. the unseen
-    # back side in a single/few-view capture). Close them so the result is
-    # watertight and safe to send to a slicer.
-    tensor_mesh = o3d.t.geometry.TriangleMesh.from_legacy(mesh)
-    tensor_mesh = tensor_mesh.fill_holes()
-    mesh = tensor_mesh.to_legacy()
+            try:
+                ms.generate_surface_reconstruction_screened_poisson(
+                    depth=int(poisson_depth), preclean=True)
+            except AttributeError:
+                ms.surface_reconstruction_screened_poisson(
+                    depth=int(poisson_depth), preclean=True)
+
+            try:
+                m_raw = ms.current_mesh()
+                quality = m_raw.vertex_quality_array()
+                if len(quality) > 0:
+                    threshold = float(np.quantile(quality, density_quantile))
+                    ms.compute_selection_by_condition_per_vertex(
+                        condselect=f"q < {threshold}")
+                    ms.meshing_remove_selected_vertices()
+            except Exception:
+                pass
+
+            m = ms.current_mesh()
+            v = m.vertex_matrix()
+            f = m.face_matrix()
+
+            mesh = o3d.geometry.TriangleMesh()
+            mesh.vertices = o3d.utility.Vector3dVector(v.astype(np.float64))
+            mesh.triangles = o3d.utility.Vector3iVector(f.astype(np.int32))
+
+            mesh.remove_degenerate_triangles()
+            mesh.remove_duplicated_triangles()
+            mesh.remove_duplicated_vertices()
+            mesh.remove_non_manifold_edges()
+
+        except Exception as e:
+            print(f"⚠ PyMeshLab no disponible/falló: {e}. Usando Poisson.")
+            mesh = None
+            method = "poisson"
+
+    # ── Poisson branch (default and automatic fallback from PyMeshLab) ────────
+    if method == "poisson":
+        mesh, densities = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(
+            pcd, depth=poisson_depth
+        )
+
+        densities = np.asarray(densities)
+        low_density_vertices = densities < np.quantile(densities, density_quantile)
+        mesh.remove_vertices_by_mask(low_density_vertices)
+
+        mesh.remove_degenerate_triangles()
+        mesh.remove_duplicated_triangles()
+        mesh.remove_duplicated_vertices()
+        mesh.remove_non_manifold_edges()
+
+        # Trimming the low-density tail above opens up boundary holes wherever the
+        # source point cloud didn't actually cover the surface (e.g. the unseen
+        # back side in a single/few-view capture). Optionally close them so the
+        # result is watertight and safe to send to a slicer.
+        if fill_holes and len(mesh.triangles) > 0:
+            tensor_mesh = o3d.t.geometry.TriangleMesh.from_legacy(mesh)
+            tensor_mesh = tensor_mesh.fill_holes()
+            mesh = tensor_mesh.to_legacy()
+
+    # ── Post-proceso común: smooth + normals + color + export ─────────────────
+    # Conservar solo el componente conexo más grande (elimina geometría suelta)
+    if len(mesh.triangles) > 0:
+        tri_cls, cls_n, _ = mesh.cluster_connected_triangles()
+        tri_cls = np.asarray(tri_cls)
+        cls_n = np.asarray(cls_n)
+        largest = int(cls_n.argmax())
+        mesh.remove_triangles_by_mask(tri_cls != largest)
+        mesh.remove_unreferenced_vertices()
+
+    if smooth_iters > 0 and len(mesh.triangles) > 0:
+        mesh = mesh.filter_smooth_taubin(number_of_iterations=smooth_iters)
+
+    mesh.compute_vertex_normals()
+
+    # Transferencia de color: KDTree sobre la nube original como fallback.
+    if len(mesh.vertex_colors) == 0:
+        from scipy.spatial import cKDTree
+        pcd_pts = np.asarray(pcd.points)
+        pcd_colors = np.asarray(pcd.colors)  # [0, 1]
+        tree = cKDTree(pcd_pts)
+        mesh_verts = np.asarray(mesh.vertices)
+        # fill_holes / Taubin pueden dejar vértices NaN/inf; los reemplazamos por el
+        # centroide de la nube para que el KDTree no falle.
+        finite_mask = np.all(np.isfinite(mesh_verts), axis=1)
+        if not finite_mask.all():
+            mesh_verts = mesh_verts.copy()
+            mesh_verts[~finite_mask] = pcd_pts.mean(axis=0)
+        _, idx = tree.query(mesh_verts)
+        mesh.vertex_colors = o3d.utility.Vector3dVector(pcd_colors[idx])
 
     o3d.io.write_triangle_mesh(output_path, mesh)
+    # Para ver color, abrir el .ply o el .glb (el .obj no guarda vertex_colors
+    # de forma fiable: la mayoria de importadores, incluido el de Blender,
+    # ignoran esa extension no estandar).
+    ply_path = os.path.splitext(output_path)[0] + ".ply"
+    if ply_path != output_path:
+        o3d.io.write_triangle_mesh(ply_path, mesh)
+
+    # glTF sí estandariza el color por vértice (atributo COLOR_0): el
+    # importador de Blender lo detecta solo y arma el material automáticamente,
+    # a diferencia del .ply (hay que configurar el shading a mano) o el .obj.
+    glb_path = os.path.splitext(output_path)[0] + ".glb"
+    export_glb(mesh, glb_path)
+
+
+def export_glb(mesh, output_path: str) -> None:
+    """Export an Open3D TriangleMesh (with vertex colors) as .glb.
+
+    glTF's COLOR_0 vertex attribute is a standard that Blender's importer
+    reads and wires into an auto-generated material, so the mesh shows its
+    color immediately in Rendered/Material Preview - no manual shading setup
+    needed (unlike .ply, and unlike .obj which drops the color entirely).
+    """
+    import trimesh
+
+    vertices = np.asarray(mesh.vertices)
+    faces = np.asarray(mesh.triangles)
+    vertex_colors = np.asarray(mesh.vertex_colors)
+    if len(vertex_colors) == len(vertices):
+        rgba = np.hstack(
+            [vertex_colors, np.ones((len(vertex_colors), 1))]
+        )
+        rgba = (rgba * 255).clip(0, 255).astype(np.uint8)
+    else:
+        rgba = None
+
+    tmesh = trimesh.Trimesh(vertices=vertices, faces=faces, vertex_colors=rgba, process=False)
+    # Trimesh's ColorVisuals has no material, so the exporter emits a
+    # primitive with no "material" index. glTF then falls back to the spec's
+    # default material (metallicFactor=1, roughnessFactor=1), which is fully
+    # metallic and, without an environment/HDRI, renders near-black in
+    # Blender regardless of COLOR_0 - i.e. "no color" even though the vertex
+    # colors are present in the file. A diffuse (non-metallic) material lets
+    # COLOR_0 actually show through.
+    tmesh.visual.material = trimesh.visual.material.PBRMaterial(
+        baseColorFactor=[255, 255, 255, 255], metallicFactor=0.0, roughnessFactor=1.0
+    )
+    tmesh.export(output_path)
 
 
 def export_depth_pngs(predictions_np: dict, depth_dir: str) -> None:
+    import matplotlib
     import matplotlib.cm as cm
 
     os.makedirs(depth_dir, exist_ok=True)
     from PIL import Image
 
     depth = predictions_np["depth"][..., 0]  # (num_frames, H, W)
-    colormap = cm.get_cmap("turbo")
+    colormap = matplotlib.colormaps["turbo"]
     for i, frame in enumerate(depth):
         finite = np.isfinite(frame)
         lo = np.percentile(frame[finite], 2) if finite.any() else 0.0
@@ -281,7 +463,14 @@ def main() -> None:
                 f"Use one of {sorted(MESH_EXTENSIONS)}."
             )
         export_mesh(
-            predictions_np, output_path, conf_thres=args.conf_thres, poisson_depth=args.poisson_depth
+            predictions_np, output_path,
+            conf_thres=args.conf_thres,
+            poisson_depth=args.poisson_depth,
+            density_quantile=args.density_quantile,
+            outlier_std=args.outlier_std,
+            fill_holes=not args.no_fill_holes,
+            smooth_iters=args.smooth_iters,
+            method=args.method,
         )
         print(f"Saved mesh to {output_path}")
     else:

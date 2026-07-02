@@ -231,3 +231,12 @@ checkpoints/
 api_outputs/
 
 testing_masks/
+
+# 3D reconstruction artifacts (loose outputs)
+*.obj
+*.ply
+*.stl
+predictions*.pt
+preview*.png
+scene*.png
+inference_test/outputs/
