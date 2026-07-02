@@ -211,9 +211,9 @@ def run_inference(
     seg_conf: float = 0.25,
     u2net_thres: float = 0.5,
     masks_debug: bool = False,
-    morph_open: bool = False,
-    morph_kernel: int = 21,
-    keep_largest: bool = False,
+    morph_open: bool = True,
+    morph_kernel: int = 20,
+    keep_largest: bool = True,
 ) -> dict[str, torch.Tensor]:
     """Load the model and images, then return the raw predictions plus
     decoded camera extrinsics/intrinsics."""
