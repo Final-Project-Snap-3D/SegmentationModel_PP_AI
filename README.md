@@ -77,8 +77,7 @@ The split is **not** produced by our code (no random split): we use the official
 | Test  | 6.779 |
 | **Total** | 32000 |
 
-![alt text](./doc/viz_images_example.png)
-
+![alt text](doc/viz_images_example.png)
 
 ---
 
@@ -178,10 +177,6 @@ Converting the VGGT-Ω point cloud into a usable surface also went through sever
 | NKSR | Yes | Not integrable in time (expired wheels, source build) |
 | **PyMeshLab (Screened Poisson)** | No | **Selected — robust, scriptable, clean install** |
 
-<!-- TODO: comparison images — raw point cloud vs Poisson vs PyMeshLab -->
-
-Per-vertex color is transferred from the point cloud to the mesh (nearest-neighbour), so the exported `.ply` keeps the object's colors. 
-
 **Input:** point cloud from VGGT-Ω. **Output:** watertight `.obj` / `.ply` mesh.
 
 ---
@@ -224,10 +219,6 @@ Once reconstruction finishes, we apply **Option C: post-inference mask filtering
        └────────▶│  Segmentation           │─▶ mask ─▶ filter ─▶ points(.ply) ─▶ mesh (.obj)
                   └────────────────────────┘
 ```
-
-### 6.3 Results
-
-<!-- TODO: screenshots / GIF from the app showing the full flow -->
 
 ---
 
