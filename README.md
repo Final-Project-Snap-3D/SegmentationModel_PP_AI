@@ -17,7 +17,8 @@
 6. [End-to-End System](#6-end-to-end-system)
 7. [Repository Structure](#7-repository-structure)
 8. [How to Run](#8-how-to-run)
-9. [Conclusions & Future Work](#9-conclusions--future-work)
+9. [Summary of Key Decisions](#9-summary-of-key-decisions)
+10. [Conclusions & Future Work](#10-conclusions--future-work)
 
 ---
 
@@ -36,7 +37,7 @@ The goal is to make 3D asset creation accessible to anyone with a phone. Concret
 
 ## 2. Pipeline Overview
 
-<!-- TODO: full pipeline diagram — multi-view capture → segmentation → VGGT-Ω (pose + reconstruction) → mask filtering → point cloud → mesh → export -->
+![alt text](doc/pipeline.png)
 
 At a high level, input images follow two parallel branches — **segmentation** (to isolate the object) and **VGGT-Ω** (to recover camera poses and a dense point cloud). The segmentation masks then filter the reconstructed point cloud, which is finally meshed and exported.
 
@@ -54,18 +55,30 @@ Smartphone photos (N views)
 
 ## 3. Dataset
 
-We train the segmentation stage on **VizWiz**, a dataset of photos taken by blind and low-vision users. It is a deliberate choice: the images are *real-world mobile captures* — noisy, with diverse lighting, cluttered backgrounds, motion blur, and off-center framing — which matches the conditions our pipeline must handle far better than clean studio datasets.
+We train the segmentation stage on **[VizWiz](https://vizwiz.org/tasks-and-datasets/salient-object-detection/)**, a dataset of photos taken by blind and low-vision users. The images are *real-world mobile captures* — noisy, with diverse lighting, cluttered backgrounds, motion blur, and off-center framing — which matches the conditions our pipeline must handle far better than clean studio datasets.
 
 Annotations are provided as one JSON per split (`VizWiz_SOD_{train,val,test}_challenge.json`), where each entry gives the ground-truth image dimensions and a list of `Salient Object` polygons. Polygons are rasterized into binary masks with `cv2.fillPoly`; images without a valid annotation are filtered out automatically.
 
+```json
+"VizWiz_train_00000000.jpg": {
+    "Full Screen": false,
+    "Total Polygons": 1,
+    "Ground Truth Dimensions": [H, W],
+    "Salient Object": [[[x1, y1], [x2, y2], ...]]
+}
+```
+
+The split is **not** produced by our code (no random split): we use the official VizWiz SOD train/val/test challenge splits directly, defined by the three JSON files above and their matching `data/{train,val,test}` image folders.
+
 | Split | Images |
 |-------|--------|
-| Train | <!-- TODO --> |
-| Val   | <!-- TODO --> |
-| Test  | <!-- TODO --> |
-| **Total** | <!-- TODO --> |
+| Train | 19.116|
+| Val   | 6.105 |
+| Test  | 6.779 |
+| **Total** | 32000 |
 
-<!-- TODO: example images -->
+![alt text](./doc/viz_images_example.png)
+
 
 ---
 
@@ -83,13 +96,19 @@ We iterated through three architectures.
 
 > Note: Segmentation must use the **VizWiz-fine-tuned** YOLO checkpoint produced by `src/train_yolo.py`.
 
-| Model | IoU | Dice | Notes |
-|-------|-----|------|-------|
-| UNet (scratch) | <!-- TODO --> | <!-- TODO --> | Unsatisfactory |
-| U²-Net | <!-- TODO --> | <!-- TODO --> | Big jump vs UNet |
-| YOLO26-seg (fine-tuned) | <!-- TODO --> | <!-- TODO --> | Cleanest |
+Metrics on the **VizWiz SOD test split** (`VizWiz_SOD_test_challenge.json`), pixel-level, same evaluation script (`src/test_evaluation.py`); binarization threshold 0.5 for UNet/U²-Net, YOLO confidence 0.25.
 
-<!-- TODO: side-by-side segmentation example images for all 3 -->
+| Model | IoU | Dice | Precision | Recall |
+|-------|-----|------|-----------|--------|
+| UNet (scratch) | <!-- TODO --> | <!-- TODO --> | <!-- TODO --> | <!-- TODO --> |
+| U²-Net | 0.7765 | 0.8397 | 0.8366 | 0.8987 |
+| **YOLO26-seg (fine-tuned)** | **0.8866** | **0.9206** | **0.9057** | **0.9584** |
+
+YOLO26-seg wins on every metric (+0.110 IoU / +14.2 %, +0.081 Dice over U²-Net) — hence our final segmenter, with U²-Net kept as the baseline. Both models keep recall above precision, i.e. they slightly over-segment (include a little background rather than dropping object pixels) — the preferable failure mode for the VizWiz use case.
+
+Images: ![alt text](./doc/image_to_mask.png)
+Masks with U2Net: ![alt text](./doc/masks_u2.png)
+Masks with YOLO: ![alt text](./doc/masks_yolo.png)
 
 ### 4.2 Mask Refinement
 
@@ -120,11 +139,11 @@ The chosen configuration is **Approach C** (`--seg-checkpoint <yolo_vizwiz>.pt -
 
 ### 5.1 VGGT-Ω
 
-For pose estimation and reconstruction we use **VGGT-Ω** (CVPR 2026, VGG Oxford + Meta AI), a feed-forward transformer that recovers camera geometry and dense 3D **in a single forward pass** — no iterative feature matching and no bundle adjustment. We chose it over **COLMAP** because incremental SfM is slow, brittle on sparse or textureless captures, and often fails on casual phone photos; VGGT-Ω stays robust even with very few views.
+For pose estimation and reconstruction we use [**VGGT-Ω** (CVPR 2026, VGG Oxford + Meta AI)](https://vggt-omega.github.io), a feed-forward transformer that recovers camera geometry and dense 3D **in a single forward pass** — no iterative feature matching and no bundle adjustment. We chose it over **COLMAP** because incremental SfM is slow, brittle on sparse or textureless captures, and often fails on casual phone photos; VGGT-Ω stays robust even with very few views.
 
 **General input / output**
 
-- **Input:** N RGB images of the object *with their background* (preprocessed to `(N, 3, H, W)`, resolution 512). The background is required — it gives the geometric context the model needs for pose estimation.
+- **Input:** N RGB images of the object *with their background* (JPG/PNG and phone **HEIC/HEIF** via `pillow-heif`; preprocessed to `(N, 3, H, W)`, resolution 512; mixed portrait/landscape is padded to a common size). The background is required — it gives the geometric context the model needs for pose estimation.
 - **Output:** for each view, camera **extrinsics** (rotation + translation) and **intrinsics** (`K`), a dense **depth map** and a per-pixel **confidence**; from these, a fused dense **point cloud** in world coordinates.
 
 **How it works — stage by stage**
@@ -141,8 +160,7 @@ The core idea is the **alternating attention** in the aggregator: frame-wise att
 
 > ⚠️ VGGT-Ω requires a **CUDA GPU** 
 
-<!-- TODO: VGGT-Ω architecture diagram — tokenizer → aggregator (alternating attention) → camera/depth heads → point cloud -->
-<!-- TODO: per-stage visualization — input views, predicted depth maps, camera poses, fused point cloud -->
+![alt text](./doc/vggto_arch.png)
 
 ### 5.2 Point Cloud to Mesh
 
@@ -162,7 +180,9 @@ Converting the VGGT-Ω point cloud into a usable surface also went through sever
 
 <!-- TODO: comparison images — raw point cloud vs Poisson vs PyMeshLab -->
 
-Per-vertex color is transferred from the point cloud to the mesh (nearest-neighbour), so the exported `.ply` keeps the object's colors. **Input:** point cloud from VGGT-Ω. **Output:** watertight `.obj` / `.ply` mesh.
+Per-vertex color is transferred from the point cloud to the mesh (nearest-neighbour), so the exported `.ply` keeps the object's colors. 
+
+**Input:** point cloud from VGGT-Ω. **Output:** watertight `.obj` / `.ply` mesh.
 
 ---
 
@@ -185,6 +205,8 @@ Endpoints:
 The `inference` endpoint accepts (multipart form): `images[]`, `export_format` (`mesh`/`points`), `mesh_format` (`obj`/`stl`/`ply`), `segment`, `seg_conf`, `export_depth`, `export_masks`, plus preprocessing knobs (`resolution`, `mode`, `conf_thres`, `poisson_depth`). It returns a JSON with `job_id`, `num_images`, `device`, tensor `shapes`, an `artifacts` list and an `archive_url`. Inference is serialized behind a lock (single shared GPU); uploads are limited to 32 images / 25 MB each, and the service returns `503` on CPU-only hosts.
 
 Configuration is environment-driven (`vggt_omega/api/constants.py`): checkpoints are looked up in `checkpoints/` first, then the repo root.
+
+**Mobile application.** The API is consumed by a mobile client: the user photographs the object from several angles, the app posts the images to `POST /api/v1/inference`, and receives the reconstructed 3D object (point cloud / mesh) as the result. The multipart service decouples the app from the GPU server, so all heavy inference stays server-side.
 
 ### 6.2 Execution Flow
 
@@ -252,51 +274,82 @@ Final-Project-Snap-3D/
 
 - Python 3.10+
 - **CUDA GPU** (required for VGGT-Ω; the point-cloud→mesh step runs on CPU)
-- Tested with PyTorch 2.6 + CUDA 12.4
+- Tested with PyTorch 2.6 + CUDA 12.6
 
 **Installation**
 
 ```bash
-git clone https://github.com/Final-Project-Snap-3D/<repo>.git
-cd <repo>
-python -m venv .venv && source .venv/bin/activate
+git clone https://github.com/Final-Project-Snap-3D/SegmentationModel_PP_AI.git
+cd SegmentationModel_PP_AI
+python -m venv venv
+source venv/bin/activate          # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-Download the VizWiz dataset into `data/` and place the model checkpoints in `checkpoints/` (`vggt_omega_1b_512.pt`, the fine-tuned YOLO/U²-Net segmentation weights).
+If PyTorch does not detect your GPU (`torch.cuda.is_available()` returns `False`), reinstall it with CUDA support:
+
+```bash
+pip uninstall torch torchvision -y
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
+```
+
+Download the VizWiz dataset into `data/` and place the model checkpoints in `checkpoints/` (`vggt_omega_1b_512.pt`, the fine-tuned YOLO/U²-Net segmentation weights). Inspect dataset samples (original and augmented) with `python src/data_visualization.py`.
 
 **Train segmentation**
 
 ```bash
-# U²-Net (default) / UNet
-python src/main.py --model_name U2 --image_size 512 --batch_size 16 --epochs 20
+# U²-Net (default). Use --model_name U to train the UNet baseline instead.
+python src/main.py --image_size 512 --batch_size 16 --epochs 100 --lr 1e-3
 
-# YOLO26-seg
+# Resume an interrupted training from the last checkpoint
+python src/main.py --resume checkpoints/last.pt --epochs 100
+
+# Smoke-test the loop on a handful of samples (data/one_image_{train,val})
+python src/main.py --batch_size 1 \
+  --train_images_dir data/one_image_train --val_images_dir data/one_image_val
+
+# YOLO26-seg — one-time conversion, then train (defaults: yolo26s-seg, imgsz 512, batch 4, AMP)
 python src/convert_vizwiz_to_yolo.py
-python src/train_yolo.py --model yolo26s-seg.pt --epochs 100 --batch 4 --imgsz 512
+python src/train_yolo.py --epochs 100
+```
+
+Training logs (losses, IoU/Dice, validation overlays) go to **Weights & Biases**; checkpoints are stored in `checkpoints/` (`best_model.pt`, `last.pt`, `final_model.pt`).
+
+**Evaluate a segmentation checkpoint**
+
+```bash
+python src/test_evaluation.py --model_path checkpoints/best_model.pt \
+  --images_dir data/test --annotations data/annotations/VizWiz_SOD_test_challenge.json
 ```
 
 **Run the pipeline (CLI)**
 
 ```bash
-# 1) VGGT-Ω + segmentation → predictions.pt (needs GPU)
+pip install -r vggt_omega/requirements.txt
+
+# 1) VGGT-Ω + segmentation → predictions (needs GPU). HEIC/HEIF phone photos supported.
 python -m vggt_omega.inference_vggt \
   -c checkpoints/vggt_omega_1b_512.pt \
   -i inference_test/images/*.jpg \
-  --seg-checkpoint checkpoints/<yolo_vizwiz>.pt --keep-largest \
-  --output inference_test/outputs/predictions.pt
+  --seg-checkpoint checkpoints/best_yolo.pt \
+  --morph-open --keep-largest \
+  --mask-dir masks \
+  -o inference_test/outputs/predictions.pt
 
-# 2) point cloud → mesh (no GPU needed)
+# 2) point cloud → watertight mesh with PyMeshLab (no GPU needed)
 python tools/debug_mesh.py \
   --predictions inference_test/outputs/predictions.pt \
   --output inference_test/outputs/scene.obj --method pymeshlab
 ```
 
+To export just the segmented **point cloud** (no mesh), point `-o` at a `.ply` file instead of `predictions.pt` — the format is inferred from the extension.
+
 **Run the API**
 
 ```bash
+pip install -r vggt_omega/api/requirements.txt
 export VGGT_CHECKPOINT=checkpoints/vggt_omega_1b_512.pt
-export VGGT_SEG_CHECKPOINT=checkpoints/<yolo_vizwiz>.pt
+export VGGT_SEG_CHECKPOINT=checkpoints/best_yolo.pt
 export VGGT_DEVICE=cuda
 uvicorn vggt_omega.api.main:app --host 0.0.0.0 --port 8000
 ```
@@ -322,7 +375,22 @@ Key environment variables (`vggt_omega/api/constants.py`):
 
 ---
 
-## 9. Conclusions & Future Work
+## 9. Summary of Key Decisions
+
+| Decision | Rationale |
+|---|---|
+| YOLO26-seg as final segmenter (over our own UNet/U²-Net) | Better mask quality and inference; U²-Net kept as an alternative and mixed AND mode |
+| Approach C — YOLO + morphological opening + keep-largest | Sharp boundaries with residual noise removed, object not eroded (vs AND-erosion or soft U²-Net edges) |
+| VGGT-Ω over COLMAP / SfM | Feed-forward single pass, robust on few casual phone photos; no iterative matching or bundle adjustment |
+| Apply the mask through `depth_conf` (conf = 0 on background) | One filtering mechanism shared by mask, confidence and depth-edge filters; mask travels inside the predictions dict |
+| Post-inference mask filtering (Option C), background kept for VGGT | Background is required context for pose estimation; the object is isolated only after reconstruction |
+| PyMeshLab (Screened Poisson) over Open3D Poisson / NKSR | Poisson artifacts on few-view clouds; NKSR not integrable (expired wheels, source build); PyMeshLab clean and scriptable |
+| Points-only PLY export (previously GLB with camera frustums) | The output is the object's cloud for meshing, not a debug scene |
+| Multipart FastAPI service behind a single-GPU lock | Decouples the mobile app from the GPU server; serializes inference on shared hardware |
+
+---
+
+## 10. Conclusions & Future Work
 
 Snap-to-3D delivers a working end-to-end path from casual smartphone photos to editable, printable 3D meshes, combining a robust segmentation front-end (YOLO + morphological opening) with a modern feed-forward reconstruction backbone (VGGT-Ω) and a scriptable meshing stage (PyMeshLab).
 
@@ -333,15 +401,14 @@ Snap-to-3D delivers a working end-to-end path from casual smartphone photos to e
 - Reconstruction quality depends on view coverage and object texture; few-view captures leave holes on unseen faces.
 - Thin or reflective surfaces remain challenging.
 - Segmentation with the fine-tuned YOLO is limited to the salient object; heavily cluttered scenes can confuse it.
-- <!-- TODO: quantitative limitations -->
 
 **Future work**
 
-- Revisit learned meshing (NKSR or successors) once tooling matures.
+- Revisit learned meshing once tooling matures.
 - Tighter mask/point-cloud fusion (evaluate in-loop vs post-inference filtering).
 - Metric-scale calibration for print-accurate dimensions.
 - Latency optimization for interactive, on-device capture.
 
 ---
 
-<!-- Remaining TODOs are figures, example images, dataset counts and metric tables that depend on the team's W&B runs and captures. Everything code- and configuration-related is filled from the current source. -->
+<!-- Remaining TODOs are figures, example images, dataset counts and the UNet metric row that depend on the team's W&B runs and captures. Everything code- and configuration-related is filled from the current source. -->
