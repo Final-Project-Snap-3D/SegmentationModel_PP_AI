@@ -55,7 +55,7 @@ Smartphone photos (N views)
 
 ## 3. Dataset
 
-We train the segmentation stage on **[VizWiz](https://vizwiz.org/tasks-and-datasets/salient-object-detection/)**, a dataset of photos taken by blind and low-vision users. The images are *real-world mobile captures* — noisy, with diverse lighting, cluttered backgrounds, motion blur, and off-center framing — which matches the conditions our pipeline must handle far better than clean studio datasets.
+We train the segmentation stage on **[VizWiz](https://vizwiz.org/tasks-and-datasets/salient-object-detection/)**, a dataset of 32 000 photos taken by blind and low-vision users. Its *real-world mobile captures* — noisy, with diverse lighting, cluttered backgrounds, motion blur, and off-center framing — closely match the conditions our pipeline must handle, making it a far better fit than clean studio datasets. Two additional characteristics shape the learning task: 68 % of images contain text overlaid on the salient object, and the salient object typically occupies a large portion of the frame.
 
 Annotations are provided as one JSON per split (`VizWiz_SOD_{train,val,test}_challenge.json`), where each entry gives the ground-truth image dimensions and a list of `Salient Object` polygons. Polygons are rasterized into binary masks with `cv2.fillPoly`; images without a valid annotation are filtered out automatically.
 
@@ -87,9 +87,9 @@ The split is **not** produced by our code (no random split): we use the official
 
 We iterated through three architectures.
 
-**1. UNet from scratch.** Trained on VizWiz with a combined `BCEDiceLoss` (0.3 BCE + 0.7 Dice), `AdamW` optimizer (lr `1e-3`), 512×512 inputs, and Albumentations augmentation (horizontal flip, rotations, shift-scale-rotate, brightness/contrast, hue/saturation, blur, noise). BatchNorm was added between Conv and ReLU to stabilize training from zero. Training began on Google CLI but was too slow, so we migrated to UPC servers. **Results were not satisfactory** — masks were imprecise and unstable.
+**1. UNet from scratch.** Trained on VizWiz with a combined `BCEDiceLoss` (0.3 BCE + 0.7 Dice), `AdamW` optimizer (lr `1e-3`), 512×512 inputs, and Albumentations augmentation (horizontal flip, rotations, shift-scale-rotate, brightness/contrast, hue/saturation, blur, noise). BatchNorm was added between Conv and ReLU to stabilize training from zero. Training was made on a Google Engine VM. **Results were not satisfactory** — masks were imprecise and unstable.
 
-**2. U²-Net.** Switching to the U²-Net architecture (nested RSU blocks with deep supervision over 6 side outputs) produced a **dramatic improvement** over UNet. Object boundaries were far cleaner, though some segmentation errors remained. This is the default model in `src/main.py` (`--model_name U2`).
+**2. U²-Net.** Switching to the U²-Net architecture (nested RSU blocks with deep supervision over 6 side outputs) produced a **dramatic improvement** over UNet. Object boundaries were far cleaner, though some segmentation errors remained. This is the default model in `src/main.py` (`--model_name U2`). The training started on the Google Engine VM but progressed very slowly.
 
 **3. YOLO (Ultralytics YOLO26-seg).** With limited time and team resources, we fine-tuned YOLO26-seg on VizWiz (single class `salient_object`) for instance segmentation. Results were **cleaner** and more robust on our target images.
 
@@ -99,7 +99,7 @@ Metrics on the **VizWiz SOD test split** (`VizWiz_SOD_test_challenge.json`), pix
 
 | Model | IoU | Dice | Precision | Recall |
 |-------|-----|------|-----------|--------|
-| UNet (scratch) | <!-- TODO --> | <!-- TODO --> | <!-- TODO --> | <!-- TODO --> |
+| UNet (scratch) | 0.62011 | 0.73052 | - | - |
 | U²-Net | 0.7765 | 0.8397 | 0.8366 | 0.8987 |
 | **YOLO26-seg (fine-tuned)** | **0.8866** | **0.9206** | **0.9057** | **0.9584** |
 
@@ -127,8 +127,14 @@ We compared three refinement approaches on the same captures:
 | **B** — U²-Net + opening | Saliency mask cleaned with morphological opening | Clean silhouette, but softer / less precise boundaries |
 | **C** — YOLO + opening | Detection mask cleaned with morphological opening | **Selected** — sharp boundaries, residual noise removed, object not eroded |
 
-<!-- TODO: side-by-side comparison image of approaches A vs B vs C on the same object -->
-<!-- TODO: for each approach, show: input photo → raw mask → refined mask (overlay on the photo) -->
+<table>
+  <tr>
+    <td align="center"><img src="./doc/img_base.jpeg" height="200"/><br/><sub><b>img_base.jpeg</b><br/>Input image</sub></td>
+    <td align="center"><img src="./doc/mask_003_mix.png" height="200"/><br/><sub><b>mask_003_mix.png</b><br/>A — YOLO ∩ U²-Net</sub></td>
+    <td align="center"><img src="./doc/mask_003_u2.png" height="200"/><br/><sub><b>mask_003_u2.png</b><br/>B — U²-Net + opening</sub></td>
+    <td align="center"><img src="./doc/mask_003_yolo.png" height="200"/><br/><sub><b>mask_003_yolo.png</b><br/>C — YOLO + opening ✓</sub></td>
+  </tr>
+</table>
 
 The chosen configuration is **Approach C** (`--seg-checkpoint <yolo_vizwiz>.pt --morph-open --keep-largest`).
 
@@ -202,6 +208,8 @@ The `inference` endpoint accepts (multipart form): `images[]`, `export_format` (
 Configuration is environment-driven (`vggt_omega/api/constants.py`): checkpoints are looked up in `checkpoints/` first, then the repo root.
 
 **Mobile application.** The API is consumed by a mobile client: the user photographs the object from several angles, the app posts the images to `POST /api/v1/inference`, and receives the reconstructed 3D object (point cloud / mesh) as the result. The multipart service decouples the app from the GPU server, so all heavy inference stays server-side.
+
+<!-- TODO: ADD: GIF API execution. -->
 
 ### 6.2 Execution Flow
 
