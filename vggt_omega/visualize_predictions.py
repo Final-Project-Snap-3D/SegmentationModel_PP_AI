@@ -34,6 +34,12 @@ from vggt_omega.visual_util import predictions_to_point_cloud
 
 MESH_EXTENSIONS = {".obj", ".stl", ".ply"}
 
+# Minimum surviving points required to attempt surface reconstruction. Below
+# this the Open3D normal-orientation / Poisson graph build crashes on a
+# near-empty cloud; a real multi-view capture yields orders of magnitude more,
+# so falling under this means segmentation/conf_thres dropped almost everything.
+MIN_MESH_POINTS = 50
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Visualize VGGT-Omega predictions.")
@@ -220,13 +226,36 @@ def export_mesh(
     if outlier_std > 0 and len(pcd.points) > 20:
         pcd, _ = pcd.remove_statistical_outlier(nb_neighbors=20, std_ratio=outlier_std)
 
+    # Surface reconstruction needs a minimum number of points: normal
+    # orientation and Poisson build a tetrahedral/k-NN graph that crashes deep
+    # in Open3D ("Not enough points to create a tetrahedral mesh") on a
+    # near-empty cloud. This happens when an aggressive object mask or a high
+    # conf_thres drops almost everything (predictions_to_point_cloud can even
+    # fall back to a single placeholder point). Fail early with an actionable
+    # message instead of a cryptic C++ error.
+    n_pts = len(pcd.points)
+    if n_pts < MIN_MESH_POINTS:
+        raise ValueError(
+            f"Too few points ({n_pts}) to reconstruct a surface mesh. The object "
+            "may not have been captured well, segmentation removed too much, or "
+            "conf_thres is too high. Lower conf_thres, disable segmentation, or "
+            "export the raw point cloud with export_format='points'."
+        )
+
     # Normal-estimation radius adapted to the cloud's scale (the previous fixed
     # 0.1 failed when the cloud was larger/smaller than that).
     pts = np.asarray(pcd.points)
     diag = float(np.linalg.norm(pts.max(axis=0) - pts.min(axis=0)))
     radius = max(diag * 0.02, 1e-6)
     pcd.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=radius, max_nn=30))
-    pcd.orient_normals_consistent_tangent_plane(30)
+    # orient_normals_consistent_tangent_plane builds a k-NN graph; k must be
+    # smaller than the point count, and even then a sparse/degenerate cloud can
+    # fail the graph build. Clamp k and fall back to a viewpoint-based
+    # orientation so meshing can still proceed.
+    try:
+        pcd.orient_normals_consistent_tangent_plane(min(30, n_pts - 1))
+    except RuntimeError:
+        pcd.orient_normals_towards_camera_location(np.array([0.0, 0.0, 0.0]))
 
     # ── PyMeshLab branch (Screened Poisson) ──────────────────────────────────
     mesh = None

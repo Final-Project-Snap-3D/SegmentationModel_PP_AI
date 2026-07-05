@@ -290,45 +290,55 @@ def inference(
 
     artifacts: List[ArtifactInfo] = []
 
-    if export_format == "mesh":
-        scene_name = f"scene.{mesh_format}"
-        export_mesh(
-            predictions_np,
-            str(job_dir / scene_name),
-            conf_thres=conf_thres,
-            poisson_depth=poisson_depth,
-            method=mesh_method,
-        )
-        artifacts.append(
-            ArtifactInfo(
-                name=scene_name,
-                type="mesh",
-                url=f"/api/v1/jobs/{job_id}/files/{scene_name}",
+    try:
+        if export_format == "mesh":
+            scene_name = f"scene.{mesh_format}"
+            export_mesh(
+                predictions_np,
+                str(job_dir / scene_name),
+                conf_thres=conf_thres,
+                poisson_depth=poisson_depth,
+                method=mesh_method,
             )
-        )
-        # export_mesh always writes companion .ply/.glb copies alongside the
-        # requested format so the vertex colors are viewable regardless of
-        # what was requested (.obj drops them, .ply/.glb keep them).
-        for companion_ext in (".ply", ".glb"):
-            companion_name = f"scene{companion_ext}"
-            if companion_name != scene_name and (job_dir / companion_name).exists():
-                artifacts.append(
-                    ArtifactInfo(
-                        name=companion_name,
-                        type="mesh",
-                        url=f"/api/v1/jobs/{job_id}/files/{companion_name}",
-                    )
+            artifacts.append(
+                ArtifactInfo(
+                    name=scene_name,
+                    type="mesh",
+                    url=f"/api/v1/jobs/{job_id}/files/{scene_name}",
                 )
-    else:
-        ply_path = job_dir / "scene.ply"
-        export_point_cloud_ply(predictions_np, str(ply_path), conf_thres=conf_thres)
-        artifacts.append(
-            ArtifactInfo(
-                name="scene.ply",
-                type="point_cloud",
-                url=f"/api/v1/jobs/{job_id}/files/scene.ply",
             )
-        )
+            # export_mesh always writes companion .ply/.glb copies alongside the
+            # requested format so the vertex colors are viewable regardless of
+            # what was requested (.obj drops them, .ply/.glb keep them).
+            for companion_ext in (".ply", ".glb"):
+                companion_name = f"scene{companion_ext}"
+                if companion_name != scene_name and (job_dir / companion_name).exists():
+                    artifacts.append(
+                        ArtifactInfo(
+                            name=companion_name,
+                            type="mesh",
+                            url=f"/api/v1/jobs/{job_id}/files/{companion_name}",
+                        )
+                    )
+        else:
+            ply_path = job_dir / "scene.ply"
+            export_point_cloud_ply(predictions_np, str(ply_path), conf_thres=conf_thres)
+            artifacts.append(
+                ArtifactInfo(
+                    name="scene.ply",
+                    type="point_cloud",
+                    url=f"/api/v1/jobs/{job_id}/files/scene.ply",
+                )
+            )
+    except ValueError as exc:
+        # Actionable reconstruction failures (e.g. too few points after
+        # segmentation / conf_thres filtering) -> 422 so the client can retry
+        # with different settings instead of seeing an opaque 500.
+        shutil.rmtree(job_dir, ignore_errors=True)
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 - surface export errors as 500
+        shutil.rmtree(job_dir, ignore_errors=True)
+        raise HTTPException(status_code=500, detail=f"Export failed: {exc}") from exc
 
     if export_depth:
         depth_dir = job_dir / "depth"
