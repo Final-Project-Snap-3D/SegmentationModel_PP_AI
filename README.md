@@ -258,26 +258,21 @@ Once reconstruction finishes, we apply **Option C: post-inference mask filtering
 
 #### 6.2.1 Extracting the object — fusing the mask with the scene depth
 
-We don't crop the images or filter points in 3D. Instead, we filter using the depth confidence that VGGT-Ω already produces. For each view it gives a depth map `D` and a confidence map `C`, both of size `(H, W)` and aligned to the input frame. Segmentation runs on those same frames, so its binary mask `M` (1 on the object, 0 on the background) lines up with `D` and `C` pixel by pixel. No resizing or reprojection is needed.
+Rather than cropping the photos or trying to clean up the cloud once it's in 3D, we do all the filtering on the depth confidence that VGGT-Ω's depth head produces alongside the depth map — the per-pixel score telling us how much it trusts each depth value. With this information, we can combine the mask obtained from the segmentation module to output a cleaned version of the point cloud. 
 
-To fuse them we just multiply the confidence by the mask, pixel by pixel (`vggt_omega/visual_util.py`, using the `object_mask` that `vggt_omega/segmentation.py` stores in the predictions):
+The reason it lines up so cleanly is that we run segmentation on the very same frames VGGT-Ω sees. So the object mask `M` comes out at the same resolution as the depth map `D` and its confidence `C`, and every mask pixel sits right on top of the matching depth pixel — nothing to resize, nothing to reproject. Hence, we can now multiply the mask with the confidence for each pixel.
 
 ```
-C' = C * M            # background pixels (M = 0) end up with confidence 0
+C' = C * M            # wherever the mask is 0 (background), confidence drops to 0
 ```
 
-A point is later kept only where its confidence is above zero, so setting the background confidence to 0 is what removes it. Two other steps also set confidence to 0 on the same map (the order between them doesn't matter, since they only ever zero pixels):
+A point only makes it into the cloud if the result from the previous multiplication (C') is above zero, allowing to remove pixels that are not inside the mask. A couple of other passes write zeros into that same map: a depth-edge filter that discards the stray "flying pixels" VGGT-Ω tends to leave along object outlines, and an optional sky filter for outdoor shots. Their order doesn't matter, since all they ever do is zero pixels out. Finally, a confidence-percentile threshold (`--conf-thres`, default 20) trims whatever low-confidence pixels remain, so that we are left with the higher-confidence pixels.
 
-- a **depth-edge filter**, which removes pixels on sharp depth jumps — the stray "flying pixels" VGGT-Ω tends to produce along object silhouettes;
-- an optional **sky filter** for outdoor scenes.
-
-After that, a **confidence-percentile threshold** (`--conf-thres`, default 20) drops the least reliable of the remaining pixels.
-
-The mask is stored inside the predictions, so every entry point (CLI, API, re-visualization) applies it the same way. In the end a pixel is kept only if it is both inside the object mask and confident enough; background pixels have confidence 0 and never become 3D points.
+Because the mask travels along inside the predictions, every way of running the pipeline — CLI, API, re-visualization — treats it exactly the same. By the end, a pixel survives only if it's both on the object and trustworthy; the background is already at zero and never turns into geometry.
 
 #### 6.2.2 Unprojecting the object's depth into 3D
 
-Every surviving pixel is back-projected to 3D with the classic pinhole model, using the view's intrinsics `K = [fx, fy, cx, cy]` and extrinsics `[R | t]` from VGGT-Ω's camera head (`unproject_depth_map_to_point_map` in `vggt_omega/visualize_predictions.py`). For a pixel `(u, v)` with depth `d`:
+Once we know which pixels belong to the object, turning them into 3D points is textbook pinhole geometry. Each view arrives with its intrinsics `K = [fx, fy, cx, cy]` and its pose `[R | t]` from VGGT-Ω's camera head. For a pixel `(u, v)` at depth `d`, we first place it in that camera's own coordinate frame and then move it into a shared world frame (the code lives in `unproject_depth_map_to_point_map`, `vggt_omega/visualize_predictions.py`):
 
 ```
 # 1) pixel + depth  ->  point in the camera's own frame
@@ -290,7 +285,7 @@ z_cam = d
 X_world = Rᵀ · ( [x_cam, y_cam, z_cam]ᵀ − t )
 ```
 
-Each point keeps the RGB colour of its source pixel. Doing this for every kept pixel of every view yields a single fused, coloured point cloud in one common world frame — the views overlap consistently because VGGT-Ω already solved for **one shared geometry** across all frames, not an independent pose per image. Since background pixels were zeroed in §6.2.1, they generate no points: the resulting cloud is the **object only**, and it is exactly what is handed to PyMeshLab for meshing.
+We carry each pixel's RGB colour over to its point, so the cloud keeps the object's real appearance. Repeat this for every surviving pixel across every view and the points all land in the same world frame and overlap cleanly — not by luck, but because VGGT-Ω solved for one consistent geometry over the whole set instead of posing each image on its own. And since the background pixels were already zeroed back in §6.2.1, none of them contribute points. What's left is just the object, ready to hand off to PyMeshLab.
 
 ---
 
