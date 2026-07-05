@@ -24,7 +24,7 @@
 
 ## 1. Introduction & Motivation
 
-Snap-to-3D is an end-to-end pipeline that turns a handful of casual smartphone photos of a real-world object into a **Blender-ready, editable, 3D-printable mesh** (`.obj` / `.ply` / `.stl`). No turntable, no scanner, no calibration rig — just a few shots taken from different angles.
+Snap-to-3D is an end-to-end pipeline that turns a handful of casual smartphone photos of a real-world object into a **Blender-ready, editable, 3D-printable mesh** (`.obj` / `.ply`). No turntable, no scanner, no calibration rig — just a few shots taken from different angles.
 
 The goal is to make 3D asset creation accessible to anyone with a phone. Concrete applications:
 
@@ -75,7 +75,7 @@ The split is **not** produced by our code (no random split): we use the official
 | Train | 19.116|
 | Val   | 6.105 |
 | Test  | 6.779 |
-| **Total** | 32000 |
+| **Total** | 32.000 |
 
 ![alt text](doc/viz_images_example.png)
 
@@ -195,23 +195,61 @@ The core idea is the **alternating attention** in the aggregator: frame-wise att
 
 ![alt text](./doc/vggto_arch.png)
 
+#### Interactive demo (Gradio)
+
+The VGGT-Ω team hosts an interactive **[Gradio](https://www.gradio.app/)** demo as a **Hugging Face Space** ([`facebook/vggt-omega`](https://huggingface.co/spaces/facebook/vggt-omega)), which we used to inspect our reconstructions: you upload a handful of images, it runs a **single forward pass** on their GPU, and renders the result in the browser — nothing to install or run locally.
+
+**What you see.** The 3D viewer shows two things at once, both recovered in the same forward pass:
+
+- **The dense point cloud** — the fused, colored 3D reconstruction, unprojected from the per-view depth maps.
+- **The estimated cameras** — one small **frustum (pyramid)** per input photo, placed at the exact position and orientation VGGT-Ω predicted for it (the extrinsics `[R | t]`). The apex sits at the camera centre and the pyramid opens along the viewing direction, so you can literally see *from where* and *at what angle* each shot was taken; together they trace the arc walked around the object.
+
+You can **orbit, zoom and pan** the scene, filter points by **depth confidence**, cap the number of points, and toggle the cameras or background on/off — useful to check that the poses are consistent and the geometry lines up before segmentation and meshing.
+
+**Intrinsics vs extrinsics.** Each frustum encodes the two sets of parameters VGGT-Ω predicts for that view:
+
+- **Extrinsics `[R | t]` — *where the camera is*.** The rotation `R` (which way it points) and translation `t` (its position) in the shared world frame. This is exactly what places and orients each pyramid in the demo: the arc of frustums *is* the extrinsics of all the shots.
+- **Intrinsics `K = [fx, fy, cx, cy]` — *the camera's internal optics*.** The focal lengths `fx, fy` (in **pixels** — roughly how many pixels span the field of view) and the principal point `cx, cy` (the optical centre on the image). They set the **opening angle of the frustum** (longer focal length → narrower pyramid → more zoomed-in view) and are what turn a pixel + its depth into a 3D ray during unprojection (see §6.2.2).
+
+So the extrinsics say *from where* each photo was taken and the intrinsics say *how* its lens maps the world onto pixels — and it's the two together that let every view's points land in one consistent cloud.
+
+![alt text](doc/demo_vggt.gif)
+
 ### 5.2 Point Cloud to Mesh
 
-Converting the VGGT-Ω point cloud into a usable surface also went through several iterations:
+All Poisson methods build the surface by fitting an implicit function to the points and their **normals** (the direction each point faces), then extracting it with Marching Cubes. What changes between them is **how tightly the surface is pinned to the actual points**:
 
-**1. Poisson Surface Reconstruction.** Classical, no learning (via Open3D). Simple to run but **poor quality** on few-view clouds — over-smoothed surfaces, "bubble"/membrane artifacts where the unseen back is extrapolated, and stray spikes from outliers. It remains available as a baseline (`--method poisson`), improved with adaptive normals, statistical outlier removal, and optional hole-filling.
+**1. Poisson (unscreened).** Solves Δχ = ∇·V — it follows only the normals, not the point positions. Where data is thin (e.g. the object's back seen from few views) the surface drifts off the points: it either balloons outward or, once the low-support parts are trimmed away, tears a **hole**. Open3D `create_from_point_cloud_poisson`. Kept as baseline/fallback.
 
-**2. NKSR.** Neural Kernel Surface Reconstruction looked promising (class-agnostic, learning-based), but we **could not integrate it** within our timeframe: the prebuilt wheels had expired and the remaining path required compiling CUDA extensions from source against our exact torch/CUDA versions.
+**2. NKSR.** Swaps the fixed B-spline basis for a **learned neural kernel field** fit to the oriented points (`nksr.Reconstructor.reconstruct`). Promising but not integrable in time (expired wheels, source CUDA build).
 
-**3. PyMeshLab.** Our **final choice**. It offers a scriptable, reproducible meshing pipeline (Screened Poisson + reliable cleaning and normal handling), producing watertight meshes without the artifacts of Open3D Poisson alone, and installs cleanly with no CUDA build step.
+**3. Screened Poisson (PyMeshLab) — final choice.** Same idea **plus one extra term** α·Σ(χ(pᵢ) − c)² that also forces the surface to pass through the points themselves. So it stays glued to the object — no drift, no holes, sharper detail. `generate_surface_reconstruction_screened_poisson(depth=9)`.
 
-| Method | Learning | Outcome |
-|--------|----------|---------|
-| Poisson (Open3D) | No | Baseline — artifacts on few-view clouds |
-| NKSR | Yes | Not integrable in time (expired wheels, source build) |
-| **PyMeshLab (Screened Poisson)** | No | **Selected — robust, scriptable, clean install** |
+| Method | Surface pinned to points | Outcome |
+|--------|--------------------------|---------|
+| Poisson | ✗ (normals only) | Drifts → balloons or holes on few-view clouds |
+| NKSR | learned kernels | Not integrable in time |
+| **Screened Poisson** | ✓ | **Selected — glued to object, sharp, watertight** |
 
-**Input:** point cloud from VGGT-Ω. **Output:** watertight `.obj` / `.ply` mesh.
+**Conversion steps.**
+
+```
+Point cloud ─►[1] conf. filter ─►[2] outlier removal ─►[3] normals (PCA + MST)
+            ─►[4] Screened Poisson (Δχ=∇·V + screening, octree d=9 → Marching Cubes)
+            ─►[5] density trim ─►[6] cleanup + color ─► watertight mesh (.obj/.ply)
+```
+
+Steps **1–3 condition** the cloud: drop low-confidence points, remove statistical outliers (mean *k*-NN distance > μ + λσ), and estimate normals by local PCA (normal = eigenvector of least variance) oriented consistently via a minimum-spanning tree — Poisson needs oriented normals. Step **4** reconstructs. Step **5 trims** vertices below the ~5 % sample-density quantile, cutting extrapolated back-face bubbles. Step **6** removes degenerate/duplicate/non-manifold elements and transfers per-vertex color from the nearest point. Steps 1–3, 6 use **Open3D**; 4–5 use **PyMeshLab** (falls back to Open3D Poisson if unavailable).
+
+**Input:** point cloud from VGGT-Ω. 
+
+![alt text](doc/points.gif)
+
+**Output:** watertight, colored `.obj` / `.ply` mesh.
+
+![alt text](doc/mesh_render.gif)
+
+*Green: Poisson / Blue: Screened Poisson
 
 ---
 
@@ -457,7 +495,7 @@ Key environment variables (`vggt_omega/api/constants.py`):
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `VGGT_CHECKPOINT` | `checkpoints/vggt_omega_1b_512.pt` | VGGT-Ω checkpoint (required) |
-| `VGGT_SEG_CHECKPOINT` | `checkpoints/yolo26s-seg.pt` | Segmentation checkpoint |
+| `VGGT_SEG_CHECKPOINT` | `checkpoints/best_yolo.pt` | Segmentation checkpoint |
 | `VGGT_DEVICE` | `cuda` | Inference device |
 | `VGGT_OUTPUT_DIR` | `api_outputs` | Per-job artifacts directory |
 
@@ -499,5 +537,3 @@ Snap-to-3D delivers a working end-to-end path from casual smartphone photos to e
 - Latency optimization for interactive, on-device capture.
 
 ---
-
-<!-- Remaining TODOs are figures, example images, dataset counts and the UNet metric row that depend on the team's W&B runs and captures. Everything code- and configuration-related is filled from the current source. -->
