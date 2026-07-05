@@ -256,7 +256,37 @@ Once reconstruction finishes, we apply **Option C: post-inference mask filtering
                   └────────────────────────┘
 ```
 
-#### 6.2.1 Extracting the object — fusing the mask with the scene depth
+#### 6.2.1 The pipeline in action — one real object
+
+Below is the exact same two-branch flow run end-to-end on a single real object: **9 smartphone shots in, a watertight mesh out.** Every image is a genuine artifact of one run (view `000` of the nine), so the walkthrough mirrors precisely what §6.2.2 and §6.2.3 describe formally.
+
+**Input — the phone views (×9).** RGB frames at `1080×1920`, straight from the phone, **with the background kept** so VGGT-Ω has the geometric context it needs.
+
+| Phone view (×9) |
+|:---:|
+| ![One of the nine smartphone input photos of the object, background intact](doc/pipeline_run/input_000.jpg) |
+
+The nine views then fan out into the two branches that run **in parallel**:
+
+**Depth branch — VGGT-Ω.** A single forward pass per view yields a dense **inverse depth map + per-pixel confidence** (×9).
+
+**Segmentation branch — Approach C (selected).** For each view, YOLO26-seg produces a raw mask (with a few stray specks), which is cleaned by a **morphological opening (kernel 21)** followed by **keep-largest-component** to leave a single, crisp object mask (×9).
+
+| VGGT-Ω depth (×9) | YOLO26-seg — raw (specks) | opening k21 → keep-largest → clean mask |
+|:---:|:---:|:---:|
+| ![VGGT-Ω dense depth map for the view](doc/pipeline_run/depth_000.png) | ![Raw YOLO26-seg mask with speckle noise](doc/pipeline_run/mask_000_yolo_raw.png) | ![Cleaned single-component object mask after opening and keep-largest](doc/pipeline_run/mask_000_clean.png) |
+
+**Mask filter — depth × mask.** The two branches converge: the clean object mask zeroes the depth confidence everywhere outside the object (`C' = C · M`), so the depth that survives is object-only.
+
+**Output — PyMeshLab mesh.** Unprojecting the surviving pixels across all nine views into one shared world frame gives a colored point cloud, which PyMeshLab turns into a watertight, Blender-ready mesh.
+
+| Mask filter — confidence → 0 outside the object | Final mesh — watertight · colored · Blender-ready |
+|:---:|:---:|
+| ![Depth map masked down to the object only](doc/pipeline_run/depth_masked_000.png) | ![Final reconstructed 3D mesh of the object](doc/pipeline_run/mesh_3d.png) |
+
+The unprojection step that bridges the masked depth and the mesh — pinhole back-projection then a camera→world transform, carrying per-pixel RGB, dropping flying pixels at depth edges, keeping the top confidence percentile and capping at ≤300k points before handing off to PyMeshLab — is detailed next.
+
+#### 6.2.2 Extracting the object — fusing the mask with the scene depth
 
 Rather than cropping the photos or trying to clean up the cloud once it's in 3D, we do all the filtering on the depth confidence that VGGT-Ω's depth head produces alongside the depth map — the per-pixel score telling us how much it trusts each depth value. With this information, we can combine the mask obtained from the segmentation module to output a cleaned version of the point cloud. 
 
@@ -270,7 +300,7 @@ A point only makes it into the cloud if the result from the previous multiplicat
 
 Because the mask travels along inside the predictions, every way of running the pipeline — CLI, API, re-visualization — treats it exactly the same. By the end, a pixel survives only if it's both on the object and trustworthy; the background is already at zero and never turns into geometry.
 
-#### 6.2.2 Unprojecting the object's depth into 3D
+#### 6.2.3 Unprojecting the object's depth into 3D
 
 Once we know which pixels belong to the object, turning them into 3D points is textbook pinhole geometry. Each view arrives with its intrinsics `K = [fx, fy, cx, cy]` and its pose `[R | t]` from VGGT-Ω's camera head. For a pixel `(u, v)` at depth `d`, we first place it in that camera's own coordinate frame and then move it into a shared world frame (the code lives in `unproject_depth_map_to_point_map`, `vggt_omega/visualize_predictions.py`):
 
@@ -285,7 +315,7 @@ z_cam = d
 X_world = Rᵀ · ( [x_cam, y_cam, z_cam]ᵀ − t )
 ```
 
-We carry each pixel's RGB colour over to its point, so the cloud keeps the object's real appearance. Repeat this for every surviving pixel across every view and the points all land in the same world frame and overlap cleanly — not by luck, but because VGGT-Ω solved for one consistent geometry over the whole set instead of posing each image on its own. And since the background pixels were already zeroed back in §6.2.1, none of them contribute points. What's left is just the object, ready to hand off to PyMeshLab.
+We carry each pixel's RGB colour over to its point, so the cloud keeps the object's real appearance. Repeat this for every surviving pixel across every view and the points all land in the same world frame and overlap cleanly — not by luck, but because VGGT-Ω solved for one consistent geometry over the whole set instead of posing each image on its own. And since the background pixels were already zeroed back in §6.2.2, none of them contribute points. What's left is just the object, ready to hand off to PyMeshLab.
 
 ---
 
