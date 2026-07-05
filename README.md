@@ -292,7 +292,7 @@ The `inference` endpoint accepts (multipart form): `images[]`, `export_format` (
 
 Configuration is environment-driven (`vggt_omega/api/constants.py`): checkpoints are looked up in `checkpoints/` first, then the repo root.
 
-**Mobile application.** The API is consumed by a mobile client: the user photographs the object from several angles, the app posts the images to `POST /api/v1/inference`, and receives the reconstructed 3D object (point cloud / mesh) as the result. The multipart service decouples the app from the GPU server, so all heavy inference stays server-side.
+**Mobile application.** The API is consumed by a mobile client: the user photographs the object from several angles, the app posts the images to `POST /api/v1/inference`, and receives the reconstructed 3D object (point cloud / mesh) as the result. The multipart service decouples the app from the GPU server, so all heavy inference stays server-side. The mobile app is developed in a separate repository: [`Final-Project-Snap-3D/FE_APP_PP_AI`](https://github.com/Final-Project-Snap-3D/FE_APP_PP_AI).
 
 The same flow as seen in the **mobile client** — *frontend → backend → frontend*:
 
