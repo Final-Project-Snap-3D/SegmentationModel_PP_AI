@@ -34,6 +34,7 @@ from vggt_omega.api import constants
 from vggt_omega.inference_vggt import run_inference
 from vggt_omega.visualize_predictions import (
     export_depth_pngs,
+    export_masked_depth_pngs,
     export_mesh,
     export_object_mask_pngs,
     export_point_cloud_ply,
@@ -389,6 +390,25 @@ def inference(
     predictions_np = to_numpy_predictions(predictions)
 
     artifacts: List[ArtifactInfo] = []
+
+    # Save the depth maps with the object mask applied *before* generating the
+    # 3D file, so the exact (masked) depth feeding the reconstruction is kept.
+    if "object_mask" in predictions_np:
+        masked_depth_dir = job_dir / "depth_masked"
+        logger.info(
+            "Job %s: exporting masked depth PNGs to %s (pre-3D)...",
+            job_id,
+            masked_depth_dir,
+        )
+        export_masked_depth_pngs(predictions_np, str(masked_depth_dir))
+        for png in sorted(masked_depth_dir.glob("*.png")):
+            artifacts.append(
+                ArtifactInfo(
+                    name=f"depth_masked/{png.name}",
+                    type="depth_map",
+                    url=f"/api/v1/jobs/{job_id}/files/depth_masked/{png.name}",
+                )
+            )
 
     try:
         if export_format == "mesh":

@@ -416,24 +416,63 @@ def export_glb(mesh, output_path: str) -> None:
     tmesh.export(output_path)
 
 
-def export_depth_pngs(predictions_np: dict, depth_dir: str) -> None:
-    import matplotlib
-    import matplotlib.cm as cm
+def _colorize_depth_frame(frame: np.ndarray, region: np.ndarray | None = None) -> np.ndarray:
+    """Colorize a single ``(H, W)`` depth frame with the 'turbo' colormap.
 
+    The 2nd–98th percentile normalization is computed over ``region`` (a boolean
+    mask) when given, so masking to the object yields better contrast; otherwise
+    it uses every finite pixel.
+    """
+    import matplotlib
+
+    colormap = matplotlib.colormaps["turbo"]
+    finite = np.isfinite(frame)
+    if region is not None:
+        finite = finite & region
+    lo = np.percentile(frame[finite], 2) if finite.any() else 0.0
+    hi = np.percentile(frame[finite], 98) if finite.any() else 1.0
+    norm = np.clip((frame - lo) / max(hi - lo, 1e-8), 0.0, 1.0)
+    return (colormap(norm)[..., :3] * 255).astype(np.uint8)
+
+
+def export_depth_pngs(predictions_np: dict, depth_dir: str) -> None:
     os.makedirs(depth_dir, exist_ok=True)
     from PIL import Image
 
     depth = predictions_np["depth"][..., 0]  # (num_frames, H, W)
-    colormap = matplotlib.colormaps["turbo"]
     for i, frame in enumerate(depth):
-        finite = np.isfinite(frame)
-        lo = np.percentile(frame[finite], 2) if finite.any() else 0.0
-        hi = np.percentile(frame[finite], 98) if finite.any() else 1.0
-        norm = np.clip((frame - lo) / max(hi - lo, 1e-8), 0.0, 1.0)
-        rgb = (colormap(norm)[..., :3] * 255).astype(np.uint8)
+        rgb = _colorize_depth_frame(frame)
         path = os.path.join(depth_dir, f"depth_{i:03d}.png")
         Image.fromarray(rgb).save(path)
     print(f"Saved {len(depth)} depth map(s) to {depth_dir}/")
+
+
+def export_masked_depth_pngs(predictions_np: dict, depth_dir: str) -> None:
+    """Save each frame's depth map with the object mask applied (background set
+    to black) as a colorized PNG.
+
+    Intended to be written *before* 3D reconstruction so you can inspect exactly
+    the masked depth that feeds the point cloud / mesh. No-op (with a message)
+    when ``object_mask`` is absent, i.e. segmentation was not run.
+    """
+    from PIL import Image
+
+    mask = predictions_np.get("object_mask")
+    if mask is None:
+        print("No object_mask in predictions; skipping masked depth export "
+              "(run inference with segmentation to produce one).")
+        return
+
+    os.makedirs(depth_dir, exist_ok=True)
+    depth = predictions_np["depth"][..., 0]  # (num_frames, H, W)
+    mask = np.asarray(mask)  # (num_frames, H, W)
+    for i, frame in enumerate(depth):
+        region = mask[i] > 0.5
+        rgb = _colorize_depth_frame(frame, region=region)
+        rgb[~region] = 0  # background -> black
+        path = os.path.join(depth_dir, f"depth_masked_{i:03d}.png")
+        Image.fromarray(rgb).save(path)
+    print(f"Saved {len(depth)} masked depth map(s) to {depth_dir}/")
 
 
 def export_object_mask_pngs(predictions_np: dict, mask_dir: str) -> None:
