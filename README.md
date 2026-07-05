@@ -1,7 +1,7 @@
 # Snap-to-3D: Multi-View Object Reconstruction from Smartphone Images
 
 > Final project — Postgraduate course on **Artificial Intelligence with Deep Learning**, UPC School (2026).
-> **Authors:** Maria Bertolín · Marc Borràs · Marc Castellana · Gerard Rossell
+> **Authors:** Maria Bertolín · Marc Borràs · Marc Castellana · Gerard Rosell
 > **Advisor:** Pablo Vega
 > **Repository:** https://github.com/Final-Project-Snap-3D
 
