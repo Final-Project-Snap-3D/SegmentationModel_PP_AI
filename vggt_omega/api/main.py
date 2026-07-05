@@ -84,6 +84,7 @@ class HealthResponse(BaseModel):
     cuda_available: bool
     vggt_checkpoint_present: bool
     seg_checkpoint_present: bool
+    seg_u2net_checkpoint_present: bool
 
 
 # ---------------------------------------------------------------------------
@@ -196,6 +197,7 @@ def health() -> HealthResponse:
         cuda_available=torch.cuda.is_available(),
         vggt_checkpoint_present=constants.VGGT_CHECKPOINT.is_file(),
         seg_checkpoint_present=constants.SEG_CHECKPOINT.is_file(),
+        seg_u2net_checkpoint_present=constants.SEG_U2NET_CHECKPOINT.is_file(),
     )
 
 
@@ -233,15 +235,37 @@ def inference(
                     "(Screened Poisson via PyMeshLab; falls back to poisson if unavailable).",
     ),
     segment: bool = Form(
-        False,
-        description="If true, run YOLO-seg and keep only the segmented object in the cloud.",
+        True,
+        description="If true, run mixed YOLO + U2Net segmentation and keep only the "
+        "segmented object in the cloud (background dropped).",
     ),
     seg_conf: float = Form(
         constants.DEFAULT_SEG_CONF, description="YOLO detection confidence threshold."
     ),
+    u2net_thres: float = Form(
+        constants.DEFAULT_U2NET_THRES,
+        description="Binarisation threshold for the U2Net saliency map.",
+    ),
+    morph_open: bool = Form(
+        True,
+        description="Apply morphological opening to the final mask (removes small noise regions).",
+    ),
+    morph_kernel: int = Form(
+        constants.DEFAULT_MORPH_KERNEL,
+        description="Elliptical kernel size for the morphological opening (larger = more aggressive).",
+    ),
+    keep_largest: bool = Form(
+        True,
+        description="Keep only the largest connected component per frame after masking.",
+    ),
+    masks_debug: bool = Form(
+        True,
+        description="In mixed mode, also produce per-frame YOLO / U2Net / combined "
+        "debug masks (exported when export_masks=true).",
+    ),
     export_depth: bool = Form(False, description="Also export per-frame depth PNGs."),
     export_masks: bool = Form(
-        False, description="Also export per-frame object-mask PNGs (requires segment=true)."
+        True, description="Also export per-frame object-mask PNGs (requires segment=true)."
     ),
 ) -> InferenceResponse:
     """Run VGGT-Omega inference over the uploaded images.
@@ -253,7 +277,8 @@ def inference(
     logger.info(
         "=== /api/v1/inference received | images=%d | resolution=%d | mode=%s | "
         "export_format=%s | mesh_format=%s | mesh_method=%s | segment=%s | "
-        "export_depth=%s | export_masks=%s",
+        "seg_conf=%.2f | u2net_thres=%.2f | morph_open=%s | morph_kernel=%d | "
+        "keep_largest=%s | masks_debug=%s | export_depth=%s | export_masks=%s",
         len(images),
         resolution,
         mode,
@@ -261,6 +286,12 @@ def inference(
         mesh_format,
         mesh_method,
         segment,
+        seg_conf,
+        u2net_thres,
+        morph_open,
+        morph_kernel,
+        keep_largest,
+        masks_debug,
         export_depth,
         export_masks,
     )
@@ -293,7 +324,12 @@ def inference(
     if segment and not constants.SEG_CHECKPOINT.is_file():
         raise HTTPException(
             status_code=503,
-            detail=f"Segmentation checkpoint not found at {constants.SEG_CHECKPOINT}.",
+            detail=f"YOLO segmentation checkpoint not found at {constants.SEG_CHECKPOINT}.",
+        )
+    if segment and not constants.SEG_U2NET_CHECKPOINT.is_file():
+        raise HTTPException(
+            status_code=503,
+            detail=f"U2Net segmentation checkpoint not found at {constants.SEG_U2NET_CHECKPOINT}.",
         )
 
     job_id = uuid.uuid4().hex
@@ -327,7 +363,15 @@ def inference(
                 mode=mode,
                 device=constants.DEVICE,
                 seg_checkpoint=str(constants.SEG_CHECKPOINT) if segment else None,
+                seg_u2net_checkpoint=(
+                    str(constants.SEG_U2NET_CHECKPOINT) if segment else None
+                ),
                 seg_conf=seg_conf,
+                u2net_thres=u2net_thres,
+                masks_debug=masks_debug,
+                morph_open=morph_open,
+                morph_kernel=morph_kernel,
+                keep_largest=keep_largest,
             )
         except Exception as exc:  # noqa: BLE001 - surface inference errors as 500
             logger.exception("Job %s: inference failed: %s", job_id, exc)

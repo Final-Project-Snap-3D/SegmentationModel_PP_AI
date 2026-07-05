@@ -49,10 +49,19 @@ VGGT_CHECKPOINT = _first_existing(
     "VGGT_CHECKPOINT", "checkpoints/vggt_omega_1b_512.pt", "vggt_omega_1b_512.pt"
 )
 
-# Optional YOLO-seg checkpoint used to keep only the segmented object in the
-# point cloud. Looked up in checkpoints/ first, then at the repo root.
+# YOLO-seg checkpoint used to keep only the segmented object in the point
+# cloud.
 SEG_CHECKPOINT = _first_existing(
-    "VGGT_SEG_CHECKPOINT", "checkpoints/yolo26s-seg.pt", "yolo26s-seg.pt"
+    "VGGT_SEG_CHECKPOINT",
+    "checkpoints/best_yolo.pt",
+)
+
+# U2Net saliency checkpoint. When segmentation is enabled the API runs YOLO and
+# U2Net together (mixed mode): the final object mask keeps only pixels where
+# both models agree (element-wise AND).
+SEG_U2NET_CHECKPOINT = _first_existing(
+    "VGGT_SEG_U2NET_CHECKPOINT",
+    "checkpoints/best_model_U2Net.pt",
 )
 
 # Where inference artifacts (PLY / depth / mask PNGs) are written. Each request
@@ -73,6 +82,10 @@ DEFAULT_RESOLUTION = int(os.getenv("VGGT_RESOLUTION", "512"))
 DEFAULT_MODE = os.getenv("VGGT_MODE", "balanced")  # "balanced" | "max_size"
 DEFAULT_CONF_THRES = float(os.getenv("VGGT_CONF_THRES", "20.0"))
 DEFAULT_SEG_CONF = float(os.getenv("VGGT_SEG_CONF", "0.25"))
+# U2Net saliency binarisation threshold (mixed-mode segmentation).
+DEFAULT_U2NET_THRES = float(os.getenv("VGGT_U2NET_THRES", "0.5"))
+# Elliptical kernel size for the morphological opening applied to the mask.
+DEFAULT_MORPH_KERNEL = int(os.getenv("VGGT_MORPH_KERNEL", "40"))
 
 # ---------------------------------------------------------------------------
 # Upload limits / validation
