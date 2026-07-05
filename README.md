@@ -1,9 +1,29 @@
 # Snap-to-3D: Multi-View Object Reconstruction from Smartphone Images
 
-> Final project — Postgraduate course on **Artificial Intelligence with Deep Learning**, UPC School (2026).
+<p align="center">
+  <a href="https://final-project-snap-3d.github.io/snap-to-3d.github.io/">
+    <img alt="Explore the Snap-to-3D website" src="https://img.shields.io/badge/Explore%20the%20project%20website-Snap--to--3D-f97316?style=for-the-badge&logo=githubpages&logoColor=white" />
+  </a>
+</p>
+<p align="center">
+  <sub>📖 Prefer a friendlier, visual walkthrough? Everything in this README is also presented as an interactive site → <a href="https://final-project-snap-3d.github.io/snap-to-3d.github.io/"><b>final-project-snap-3d.github.io</b></a></sub>
+</p>
+
+> Final project — Postgraduate course on **Artificial Intelligence with Deep Learning**, UPC School (2026)
+>
 > **Authors:** Maria Bertolín · Marc Borràs · Marc Castellana · Gerard Rosell
+>
 > **Advisor:** Pablo Vega
-> **Repository:** https://github.com/Final-Project-Snap-3D
+>
+> **Repository:** https://github.com/Final-Project-Snap-3D/SegmentationModel_PP_AI
+
+---
+
+## TL;DR
+
+> **Snap-to-3D** turns a handful of casual smartphone photos into a **Blender-ready, 3D-printable mesh** (`.obj` / `.ply`) — no scanner, turntable, or calibration rig.
+>
+> **How it works:** two branches run **in parallel** on the same shots. **Segmentation** (YOLO26-seg fine-tuned on VizWiz — **0.89 IoU / 0.92 Dice**) isolates the object, while **VGGT-Ω**, a feed-forward transformer, recovers camera poses and a dense **depth map + per-pixel confidence** in a single pass. The mask zeroes the depth confidence *before* unprojection, so the point cloud is **born object-only**; **PyMeshLab** (screened Poisson) then turns it into a watertight mesh. The whole pipeline is served by a **FastAPI** backend consumed by a **mobile app**.
 
 ---
 
@@ -39,17 +59,18 @@ The goal is to make 3D asset creation accessible to anyone with a phone. Concret
 
 ![alt text](doc/pipeline.png)
 
-At a high level, input images follow two parallel branches — **segmentation** (to isolate the object) and **VGGT-Ω** (to recover camera poses and a dense point cloud). The segmentation masks then filter the reconstructed point cloud, which is finally meshed and exported.
+At a high level, the input photos fan out into **two branches that run in parallel** on the same frames. **VGGT-Ω** recovers, in a single forward pass, every view's camera (**extrinsics + intrinsics**) and a dense **depth map with a per-pixel confidence** — not a point cloud yet. **Segmentation** isolates the object as a **binary mask** per view. The two branches converge at the **mask filter**, which zeroes the depth confidence *outside* the object (`C' = C · M`) **before any 3D point exists**. Only the surviving, object-only pixels are then **unprojected** into one shared world frame to build the point cloud, which **PyMeshLab** turns into a watertight mesh (screened Poisson) and exports as `.obj` / `.ply`.
 
 ```
-Smartphone photos (N views)
+Smartphone photos (N views · RGB · background kept)
         │
-        ├───────────────► Segmentation     ──────────► binary masks  ─┐
-        │                 (YOLO / U²-Net)                             │
-        │                                                             ▼
-        └───────────────► VGGT-Ω ─► poses + dense point cloud ─► mask filter ─► PyMeshLab ─► .obj/.ply
-                          (full RGB, background kept)          
+        ├─────► Segmentation ─────► binary masks ───────────────────┐
+        │       (YOLO26-seg + opening + keep-largest)               │
+        │                                                           ▼
+        └─────► VGGT-Ω ─────► depth maps + per-pixel confidence ─► mask filter ─► unprojection ─► PyMeshLab ─► .obj/.ply
 ```
+
+Because the mask is applied to the **depth confidence** — not to a finished cloud — the point cloud is *born* object-only: no background geometry is ever built and then discarded. **Unprojection** is textbook pinhole back-projection (`x = (u − cx)/fx · d`, then camera → world via `Rᵀ`), carrying each pixel's RGB colour, dropping depth-edge *flying pixels*, keeping the top confidence percentile (~80 %) and capping at **≤ 300k points** before meshing — see §5 and §6.2 for the full treatment.
 
 ---
 
@@ -76,8 +97,6 @@ The split is **not** produced by our code (no random split): we use the official
 | Val   | 6.105 |
 | Test  | 6.779 |
 | **Total** | 32.000 |
-
-![alt text](doc/viz_images_example.png)
 
 ---
 
@@ -128,7 +147,7 @@ A morphological *opening* is **erosion followed by dilation** with the same stru
 - **Erosion** turns a pixel on **only if the whole kernel fits inside the foreground**. It strips a border layer off every region, deletes specks, and severs thin bridges between blobs.
 - **Dilation** is the dual: a pixel turns on if **any** foreground pixel falls under the kernel. It regrows that border layer.
 
-Applied in that order, the main object shrinks and then grows back to (roughly) its original size, but anything **thinner than the kernel** — specks, 1-pixel bridges, ragged edges — is erased by the erosion and has nothing left to regrow from during dilation. This allows to erase any unwanted smalle clusters of pixels related to background objects. A worked 3×3 example (`█` = object, `·` = background):
+Applied in that order, the main object shrinks and then grows back to (roughly) its original size, but anything **thinner than the kernel** — specks, 1-pixel bridges, ragged edges — is erased by the erosion and has nothing left to regrow from during dilation. This lets us erase any unwanted small clusters of pixels related to background objects. A worked 3×3 example (`█` = object, `·` = background):
 
 ```
         Original                After erosion             After dilation  =  OPENING
@@ -275,7 +294,15 @@ Configuration is environment-driven (`vggt_omega/api/constants.py`): checkpoints
 
 **Mobile application.** The API is consumed by a mobile client: the user photographs the object from several angles, the app posts the images to `POST /api/v1/inference`, and receives the reconstructed 3D object (point cloud / mesh) as the result. The multipart service decouples the app from the GPU server, so all heavy inference stays server-side.
 
-<!-- TODO: ADD: GIF API execution. -->
+The same flow as seen in the **mobile client** — *frontend → backend → frontend*:
+
+<table>
+  <tr>
+    <td align="center"><img src="./doc/frontend_initial.PNG" height="360"/><br/><sub><b>1 · Capture</b> · frontend<br/>The user shoots N views of the object</sub></td>
+    <td align="center"><img src="./doc/frontend_computing_pipeline.PNG" height="360"/><br/><sub><b>2 · Compute</b> · backend<br/>Images POSTed to <code>/api/v1/inference</code>; the GPU server runs VGGT-Ω&nbsp;+&nbsp;segmentation&nbsp;+&nbsp;meshing</sub></td>
+    <td align="center"><img src="./doc/frontend_result.PNG" height="360"/><br/><sub><b>3 · Result</b> · frontend<br/>The reconstructed 3D object is returned to the app</sub></td>
+  </tr>
+</table>
 
 ### 6.2 Execution Flow
 
@@ -283,14 +310,14 @@ VGGT-Ω inference and segmentation run **in parallel** on the same input images.
 
 > **Important:** VGGT-Ω input must include the object **with its background**. The background provides essential geometric context for accurate pose estimation — cropping it out degrades reconstruction.
 
-Once reconstruction finishes, we apply **Option C: post-inference mask filtering** — the segmentation mask zeroes the confidence of non-object pixels, filtering the reconstructed point cloud down to the object. The filtered point cloud is then converted to a mesh via PyMeshLab.
+Once **VGGT-Ω inference** finishes, we apply **Option C: post-inference mask filtering** — the segmentation mask zeroes the **depth confidence** of every non-object pixel (`C' = C · M`), so that when the masked depth is unprojected only object pixels ever become 3D points. The resulting **object-only** point cloud is then converted to a mesh via PyMeshLab.
 
 ```
                   ┌────────────────────────┐
-  input images ─▶│  VGGT-Ω (with bg)       │─▶ point cloud ┐
-       │          └────────────────────────┘                │
-       │          ┌────────────────────────┐                ▼
-       └────────▶│  Segmentation           │─▶ mask ─▶ filter ─▶ points(.ply) ─▶ mesh (.obj)
+  input images ─▶│  VGGT-Ω (with bg)       │─▶ depth + confidence ┐
+       │          └────────────────────────┘                      │
+       │          ┌────────────────────────┐                      ▼
+       └────────▶│  Segmentation           │─▶ binary mask ─────▶ mask filter ─▶ unprojection ─▶ points(.ply) ─▶ mesh (.obj)
                   └────────────────────────┘
 ```
 
@@ -367,6 +394,7 @@ Final-Project-Snap-3D/
 ├── src/                           # Segmentation
 │   ├── dataset.py                 # VizWiz Dataset (polygon → mask)
 │   ├── augmentation.py            # Albumentations train / val_test pipelines
+│   ├── data_visualization.py      # Inspect dataset samples (original + augmented)
 │   ├── model.py                   # UNet + U²-Net architectures
 │   ├── losses.py                  # BCEDiceLoss
 │   ├── main.py                    # Training loop (UNet/U²-Net) + metrics + W&B
