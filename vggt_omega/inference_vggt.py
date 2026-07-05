@@ -27,7 +27,9 @@ Example
 """
 
 import argparse
+import logging
 import os
+import time
 
 import torch
 
@@ -43,6 +45,8 @@ from vggt_omega.visualize_predictions import (
     export_point_cloud_ply,
     to_numpy_predictions,
 )
+
+logger = logging.getLogger("vggt_omega.inference")
 
 
 def parse_args() -> argparse.Namespace:
@@ -217,17 +221,58 @@ def run_inference(
 ) -> dict[str, torch.Tensor]:
     """Load the model and images, then return the raw predictions plus
     decoded camera extrinsics/intrinsics."""
-    model = VGGTOmega().to(device).eval()
-    model.load_state_dict(torch.load(checkpoint_path, map_location="cpu"))
+    total_start = time.perf_counter()
+    logger.info(
+        "run_inference: start | images=%d | resolution=%d | mode=%s | device=%s | "
+        "segmentation=%s",
+        len(image_names),
+        image_resolution,
+        mode,
+        device,
+        "yolo+u2net" if (seg_checkpoint and seg_u2net_checkpoint)
+        else "yolo" if seg_checkpoint
+        else "u2net" if seg_u2net_checkpoint
+        else "off",
+    )
 
+    logger.info("Step 1/5: loading VGGT-Omega model onto '%s'...", device)
+    step_start = time.perf_counter()
+    model = VGGTOmega().to(device).eval()
+    logger.info("Step 1/5: loading checkpoint weights from '%s'...", checkpoint_path)
+    model.load_state_dict(torch.load(checkpoint_path, map_location="cpu"))
+    logger.info(
+        "Step 1/5: model ready (%.2fs)", time.perf_counter() - step_start
+    )
+
+    logger.info(
+        "Step 2/5: loading and preprocessing %d image(s) at resolution %d (mode=%s)...",
+        len(image_names),
+        image_resolution,
+        mode,
+    )
+    step_start = time.perf_counter()
     images = load_and_preprocess_images(
         image_names,
         mode=mode,
         image_resolution=image_resolution,
     ).to(device)
+    logger.info(
+        "Step 2/5: images preprocessed | tensor shape=%s (%.2fs)",
+        tuple(images.shape),
+        time.perf_counter() - step_start,
+    )
 
+    logger.info("Step 3/5: running model forward pass...")
+    step_start = time.perf_counter()
     predictions = model(images)
+    logger.info(
+        "Step 3/5: forward pass done | predicted keys=%s (%.2fs)",
+        sorted(predictions.keys()),
+        time.perf_counter() - step_start,
+    )
 
+    logger.info("Step 4/5: decoding camera extrinsics/intrinsics from pose encoding...")
+    step_start = time.perf_counter()
     extrinsics, intrinsics = encoding_to_camera(
         predictions["pose_enc"],
         predictions["images"].shape[-2:],
@@ -238,8 +283,24 @@ def run_inference(
     predictions["intrinsics"] = intrinsics
     predictions["camera_tokens"] = camera_and_register_tokens[:, :, :1]
     predictions["registers"] = camera_and_register_tokens[:, :, 1:]
+    logger.info(
+        "Step 4/5: cameras decoded | extrinsics=%s | intrinsics=%s (%.2fs)",
+        tuple(extrinsics.shape),
+        tuple(intrinsics.shape),
+        time.perf_counter() - step_start,
+    )
 
     if seg_checkpoint is not None or seg_u2net_checkpoint is not None:
+        logger.info(
+            "Step 5/5: running object segmentation | yolo=%s | u2net=%s | "
+            "conf=%.2f | morph_open=%s | keep_largest=%s...",
+            seg_checkpoint,
+            seg_u2net_checkpoint,
+            seg_conf,
+            morph_open,
+            keep_largest,
+        )
+        step_start = time.perf_counter()
         add_object_masks(
             predictions,
             yolo_checkpoint=seg_checkpoint,
@@ -253,7 +314,16 @@ def run_inference(
             morph_kernel=morph_kernel,
             keep_largest=keep_largest,
         )
+        logger.info(
+            "Step 5/5: segmentation done (%.2fs)", time.perf_counter() - step_start
+        )
+    else:
+        logger.info("Step 5/5: segmentation disabled, skipping.")
 
+    logger.info(
+        "run_inference: complete | total elapsed %.2fs",
+        time.perf_counter() - total_start,
+    )
     return predictions
 
 

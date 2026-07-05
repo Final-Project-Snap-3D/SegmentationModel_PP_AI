@@ -16,9 +16,10 @@ The interactive docs (OpenAPI / Swagger UI) are served at ``/docs``.
 from __future__ import annotations
 
 import io
+import logging
 import shutil
-import tempfile
 import threading
+import time
 import uuid
 import zipfile
 from pathlib import Path
@@ -38,6 +39,14 @@ from vggt_omega.visualize_predictions import (
     export_point_cloud_ply,
     to_numpy_predictions,
 )
+
+# Emit INFO logs to stdout if the host process (e.g. uvicorn) hasn't already
+# configured logging, so the step-by-step inference trace is visible.
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+)
+logger = logging.getLogger("vggt_omega.api")
 
 app = FastAPI(
     title=constants.API_TITLE,
@@ -115,6 +124,7 @@ def _validate_uploads(images: List[UploadFile]) -> None:
 
 def _save_uploads(images: List[UploadFile], dest_dir: Path) -> List[str]:
     """Persist uploads to `dest_dir`, enforcing the per-file size limit."""
+    dest_dir.mkdir(parents=True, exist_ok=True)
     paths: List[str] = []
     for index, upload in enumerate(images):
         ext = Path(upload.filename or "").suffix.lower()
@@ -132,6 +142,14 @@ def _save_uploads(images: List[UploadFile], dest_dir: Path) -> List[str]:
                         ),
                     )
                 fh.write(chunk)
+        logger.info(
+            "  saved upload %d/%d: '%s' -> %s (%.1f KB)",
+            index + 1,
+            len(images),
+            upload.filename,
+            target,
+            size / 1024.0,
+        )
         paths.append(str(target))
     return paths
 
@@ -231,6 +249,23 @@ def inference(
     Returns metadata, the output tensor shapes and download URLs for the
     generated artifacts (mesh or point cloud + optional depth / mask PNGs).
     """
+    request_start = time.perf_counter()
+    logger.info(
+        "=== /api/v1/inference received | images=%d | resolution=%d | mode=%s | "
+        "export_format=%s | mesh_format=%s | mesh_method=%s | segment=%s | "
+        "export_depth=%s | export_masks=%s",
+        len(images),
+        resolution,
+        mode,
+        export_format,
+        mesh_format,
+        mesh_method,
+        segment,
+        export_depth,
+        export_masks,
+    )
+
+    logger.info("Validating device readiness and uploaded files...")
     _check_device_ready()
     _validate_uploads(images)
 
@@ -264,28 +299,49 @@ def inference(
     job_id = uuid.uuid4().hex
     job_dir = constants.OUTPUT_DIR / job_id
     job_dir.mkdir(parents=True, exist_ok=True)
+    logger.info("Job %s: created output directory %s", job_id, job_dir)
 
-    with tempfile.TemporaryDirectory() as tmp:
-        image_paths = _save_uploads(images, Path(tmp))
+    # Persist the original uploads inside the job's output folder so they are
+    # kept alongside the generated artifacts (and available in the ZIP archive).
+    inputs_dir = job_dir / "inputs"
+    logger.info("Job %s: saving %d original image(s) to %s", job_id, len(images), inputs_dir)
+    try:
+        image_paths = _save_uploads(images, inputs_dir)
+    except HTTPException:
+        # e.g. a file over the size limit: drop the partially written job dir.
+        shutil.rmtree(job_dir, ignore_errors=True)
+        raise
 
-        with _INFERENCE_LOCK:
-            try:
-                predictions = run_inference(
-                    checkpoint_path=str(constants.VGGT_CHECKPOINT),
-                    image_names=image_paths,
-                    image_resolution=resolution,
-                    mode=mode,
-                    device=constants.DEVICE,
-                    seg_checkpoint=str(constants.SEG_CHECKPOINT) if segment else None,
-                    seg_conf=seg_conf,
-                )
-            except Exception as exc:  # noqa: BLE001 - surface inference errors as 500
-                shutil.rmtree(job_dir, ignore_errors=True)
-                raise HTTPException(
-                    status_code=500, detail=f"Inference failed: {exc}"
-                ) from exc
+    logger.info(
+        "Job %s: acquiring inference lock and running VGGT-Omega on %d image(s)...",
+        job_id,
+        len(image_paths),
+    )
+    with _INFERENCE_LOCK:
+        infer_start = time.perf_counter()
+        try:
+            predictions = run_inference(
+                checkpoint_path=str(constants.VGGT_CHECKPOINT),
+                image_names=image_paths,
+                image_resolution=resolution,
+                mode=mode,
+                device=constants.DEVICE,
+                seg_checkpoint=str(constants.SEG_CHECKPOINT) if segment else None,
+                seg_conf=seg_conf,
+            )
+        except Exception as exc:  # noqa: BLE001 - surface inference errors as 500
+            logger.exception("Job %s: inference failed: %s", job_id, exc)
+            shutil.rmtree(job_dir, ignore_errors=True)
+            raise HTTPException(
+                status_code=500, detail=f"Inference failed: {exc}"
+            ) from exc
+    logger.info(
+        "Job %s: inference finished (%.2fs)", job_id, time.perf_counter() - infer_start
+    )
 
     shapes = _tensor_shapes(predictions)
+    logger.info("Job %s: prediction tensor shapes: %s", job_id, shapes)
+    logger.info("Job %s: converting predictions to numpy...", job_id)
     predictions_np = to_numpy_predictions(predictions)
 
     artifacts: List[ArtifactInfo] = []
@@ -293,12 +349,27 @@ def inference(
     try:
         if export_format == "mesh":
             scene_name = f"scene.{mesh_format}"
+            logger.info(
+                "Job %s: exporting mesh '%s' (method=%s, poisson_depth=%d, "
+                "conf_thres=%.1f)...",
+                job_id,
+                scene_name,
+                mesh_method,
+                poisson_depth,
+                conf_thres,
+            )
+            export_start = time.perf_counter()
             export_mesh(
                 predictions_np,
                 str(job_dir / scene_name),
                 conf_thres=conf_thres,
                 poisson_depth=poisson_depth,
                 method=mesh_method,
+            )
+            logger.info(
+                "Job %s: mesh exported (%.2fs)",
+                job_id,
+                time.perf_counter() - export_start,
             )
             artifacts.append(
                 ArtifactInfo(
@@ -322,7 +393,18 @@ def inference(
                     )
         else:
             ply_path = job_dir / "scene.ply"
+            logger.info(
+                "Job %s: exporting point cloud 'scene.ply' (conf_thres=%.1f)...",
+                job_id,
+                conf_thres,
+            )
+            export_start = time.perf_counter()
             export_point_cloud_ply(predictions_np, str(ply_path), conf_thres=conf_thres)
+            logger.info(
+                "Job %s: point cloud exported (%.2fs)",
+                job_id,
+                time.perf_counter() - export_start,
+            )
             artifacts.append(
                 ArtifactInfo(
                     name="scene.ply",
@@ -334,14 +416,17 @@ def inference(
         # Actionable reconstruction failures (e.g. too few points after
         # segmentation / conf_thres filtering) -> 422 so the client can retry
         # with different settings instead of seeing an opaque 500.
+        logger.warning("Job %s: export failed (unprocessable): %s", job_id, exc)
         shutil.rmtree(job_dir, ignore_errors=True)
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001 - surface export errors as 500
+        logger.exception("Job %s: export failed: %s", job_id, exc)
         shutil.rmtree(job_dir, ignore_errors=True)
         raise HTTPException(status_code=500, detail=f"Export failed: {exc}") from exc
 
     if export_depth:
         depth_dir = job_dir / "depth"
+        logger.info("Job %s: exporting depth PNGs to %s...", job_id, depth_dir)
         export_depth_pngs(predictions_np, str(depth_dir))
         for png in sorted(depth_dir.glob("*.png")):
             artifacts.append(
@@ -354,6 +439,7 @@ def inference(
 
     if export_masks and "object_mask" in predictions_np:
         mask_dir = job_dir / "masks"
+        logger.info("Job %s: exporting object-mask PNGs to %s...", job_id, mask_dir)
         export_object_mask_pngs(predictions_np, str(mask_dir))
         for png in sorted(mask_dir.glob("*.png")):
             artifacts.append(
@@ -364,6 +450,13 @@ def inference(
                 )
             )
 
+    logger.info(
+        "=== Job %s: done | %d artifact(s): %s | total %.2fs",
+        job_id,
+        len(artifacts),
+        [a.name for a in artifacts],
+        time.perf_counter() - request_start,
+    )
     return InferenceResponse(
         job_id=job_id,
         num_images=len(image_paths),
