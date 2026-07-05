@@ -97,13 +97,15 @@ We iterated through three architectures.
 
 Metrics on the **VizWiz SOD test split** (`VizWiz_SOD_test_challenge.json`), pixel-level, same evaluation script (`src/test_evaluation.py`); binarization threshold 0.5 for UNet/U²-Net, YOLO confidence 0.25.
 
-| Model | IoU | Dice | Precision | Recall |
+| Model | IoU | Dice | Precision\* | Recall\* |
 |-------|-----|------|-----------|--------|
 | UNet (scratch) | 0.62011 | 0.73052 | - | - |
 | U²-Net | 0.7765 | 0.8397 | 0.8366 | 0.8987 |
 | **YOLO26-seg (fine-tuned)** | **0.8866** | **0.9206** | **0.9057** | **0.9584** |
 
 YOLO26-seg wins on every metric (+0.110 IoU / +14.2 %, +0.081 Dice over U²-Net) — hence our final segmenter, with U²-Net kept as the baseline. Both models keep recall above precision, i.e. they slightly over-segment (include a little background rather than dropping object pixels) — the preferable failure mode for the VizWiz use case.
+
+> **\* On Precision and Recall.** These two are each reported at the model's *own* operating point — binarization threshold 0.5 for UNet/U²-Net, confidence 0.25 for YOLO — and, for YOLO, after merging its per-instance masks into a single foreground mask. They are therefore *indicative* rather than measured at a matched operating point, and are far more threshold-sensitive than IoU/Dice (a lower threshold trades precision for recall and vice versa). UNet's were not logged. A unified, threshold-matched evaluation (precision–recall curves at a common operating point) is left as **future work** — see §10.
 
 Images: ![alt text](./doc/image_to_mask.png)
 Masks with U2Net: ![alt text](./doc/masks_u2.png)
@@ -118,6 +120,32 @@ Our segmentation module (`vggt_omega/segmentation.py`) provides a toolbox that c
 - **AND combination (mixed mode).** Element-wise AND of the YOLO and U²-Net binary masks — a pixel is kept only if *both* models agree it is foreground. This cancels each model's false positives, but erodes the object wherever the two disagree.
 - **Morphological opening** (`--morph-open`; elliptical kernel, `--morph-kernel`, default 21). Erosion followed by dilation: removes small noise regions and thin bridges while leaving the main compact object intact.
 - **Keep-largest component** (`--keep-largest`). Connected-component analysis (8-connectivity) that keeps only the largest region per frame, discarding secondary detections (e.g. a background object caught alongside the target).
+
+#### What is a morphological opening?
+
+A morphological *opening* is **erosion followed by dilation** with the same structuring element (here an elliptical kernel of side `--morph-kernel`, default 21). The two operations slide that kernel over the binary mask:
+
+- **Erosion** turns a pixel on **only if the whole kernel fits inside the foreground**. It strips a border layer off every region, deletes specks, and severs thin bridges between blobs.
+- **Dilation** is the dual: a pixel turns on if **any** foreground pixel falls under the kernel. It regrows that border layer.
+
+Applied in that order, the main object shrinks and then grows back to (roughly) its original size, but anything **thinner than the kernel** — specks, 1-pixel bridges, ragged edges — is erased by the erosion and has nothing left to regrow from during dilation. This allows to erase any unwanted smalle clusters of pixels related to background objects. A worked 3×3 example (`█` = object, `·` = background):
+
+```
+        Original                After erosion             After dilation  =  OPENING
+   (block + a stray speck)     (border stripped,          (block restored,
+                                speck & thin bits gone)     speck stays gone)
+   · · · · · · ·               · · · · · · ·               · · · · · · ·
+   · █ █ █ █ · ·               · · · · · · ·               · █ █ █ █ · ·
+   · █ █ █ █ · █   ← speck     · · █ █ · · ·               · █ █ █ █ · ·
+   · █ █ █ █ · ·               · · · · · · ·               · █ █ █ █ · ·
+   · · · · · · ·               · · · · · · ·               · · · · · · ·
+```
+
+The isolated speck is smaller than the kernel, so erosion wipes it out permanently; the solid block loses its outer ring to erosion but dilation restores it. A large kernel (21) is deliberately aggressive: it clears sizeable spurious regions and thick bridges, keeping only the main compact object.
+
+![Morphological opening on an illustrative mask: original with speckle noise and a thin bridge, then erosion, then dilation (opening)](./doc/morph_open_example.png)
+
+The same idea on a real 2D mask (illustrative). Note the secondary blob on the right: opening only cuts the **thin bridge** joining it to the object — the blob itself is larger than the kernel, so it survives. That is exactly why **keep-largest** runs next: once opening has disconnected the noise, connected-component analysis drops the now-isolated secondary region and leaves only the main object.
 
 We compared three refinement approaches on the same captures:
 
@@ -227,6 +255,42 @@ Once reconstruction finishes, we apply **Option C: post-inference mask filtering
        └────────▶│  Segmentation           │─▶ mask ─▶ filter ─▶ points(.ply) ─▶ mesh (.obj)
                   └────────────────────────┘
 ```
+
+#### 6.2.1 Extracting the object — fusing the mask with the scene depth
+
+We don't crop the images or filter points in 3D. Instead, we filter using the depth confidence that VGGT-Ω already produces. For each view it gives a depth map `D` and a confidence map `C`, both of size `(H, W)` and aligned to the input frame. Segmentation runs on those same frames, so its binary mask `M` (1 on the object, 0 on the background) lines up with `D` and `C` pixel by pixel. No resizing or reprojection is needed.
+
+To fuse them we just multiply the confidence by the mask, pixel by pixel (`vggt_omega/visual_util.py`, using the `object_mask` that `vggt_omega/segmentation.py` stores in the predictions):
+
+```
+C' = C * M            # background pixels (M = 0) end up with confidence 0
+```
+
+A point is later kept only where its confidence is above zero, so setting the background confidence to 0 is what removes it. Two other steps also set confidence to 0 on the same map (the order between them doesn't matter, since they only ever zero pixels):
+
+- a **depth-edge filter**, which removes pixels on sharp depth jumps — the stray "flying pixels" VGGT-Ω tends to produce along object silhouettes;
+- an optional **sky filter** for outdoor scenes.
+
+After that, a **confidence-percentile threshold** (`--conf-thres`, default 20) drops the least reliable of the remaining pixels.
+
+The mask is stored inside the predictions, so every entry point (CLI, API, re-visualization) applies it the same way. In the end a pixel is kept only if it is both inside the object mask and confident enough; background pixels have confidence 0 and never become 3D points.
+
+#### 6.2.2 Unprojecting the object's depth into 3D
+
+Every surviving pixel is back-projected to 3D with the classic pinhole model, using the view's intrinsics `K = [fx, fy, cx, cy]` and extrinsics `[R | t]` from VGGT-Ω's camera head (`unproject_depth_map_to_point_map` in `vggt_omega/visualize_predictions.py`). For a pixel `(u, v)` with depth `d`:
+
+```
+# 1) pixel + depth  ->  point in the camera's own frame
+x_cam = (u - cx) / fx * d
+y_cam = (v - cy) / fy * d
+z_cam = d
+
+# 2) camera frame  ->  shared world frame
+#    (extrinsics map world->camera, so we invert with Rᵀ)
+X_world = Rᵀ · ( [x_cam, y_cam, z_cam]ᵀ − t )
+```
+
+Each point keeps the RGB colour of its source pixel. Doing this for every kept pixel of every view yields a single fused, coloured point cloud in one common world frame — the views overlap consistently because VGGT-Ω already solved for **one shared geometry** across all frames, not an independent pose per image. Since background pixels were zeroed in §6.2.1, they generate no points: the resulting cloud is the **object only**, and it is exactly what is handed to PyMeshLab for meshing.
 
 ---
 
@@ -403,6 +467,7 @@ Snap-to-3D delivers a working end-to-end path from casual smartphone photos to e
 
 **Future work**
 
+- **Unified segmentation metrics.** Evaluate all models at a matched operating point (precision–recall curves / threshold sweep, consistent instance-mask merging) so Precision and Recall are directly comparable across UNet, U²-Net and YOLO — and log the missing UNet values (see the note under §4.1).
 - Revisit learned meshing once tooling matures.
 - Tighter mask/point-cloud fusion (evaluate in-loop vs post-inference filtering).
 - Metric-scale calibration for print-accurate dimensions.
