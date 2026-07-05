@@ -106,9 +106,23 @@ The split is **not** produced by our code (no random split): we use the official
 
 We iterated through three architectures.
 
-**1. UNet from scratch.** Trained on VizWiz with a combined `BCEDiceLoss` (0.3 BCE + 0.7 Dice), `AdamW` optimizer (lr `1e-3`), 512×512 inputs, and Albumentations augmentation (horizontal flip, rotations, shift-scale-rotate, brightness/contrast, hue/saturation, blur, noise). BatchNorm was added between Conv and ReLU to stabilize training from zero. Training was made on a Google Engine VM. **Results were not satisfactory** — masks were imprecise and unstable.
+**1. UNet from scratch.** Trained on VizWiz with a combined `BCEDiceLoss` (0.3 BCE + 0.7 Dice), `AdamW` optimizer (lr `1e-3`), 512×512 inputs, and Albumentations augmentation (horizontal flip, rotations, shift-scale-rotate, brightness/contrast, hue/saturation, blur, noise). BatchNorm was added between Conv and ReLU to stabilize training from zero. Training was made on a Google Engine VM. **Results were not satisfactory** — masks were imprecise and unstable. The training and validation losses are shown below:
 
-**2. U²-Net.** Switching to the U²-Net architecture (nested RSU blocks with deep supervision over 6 side outputs) produced a **dramatic improvement** over UNet. Object boundaries were far cleaner, though some segmentation errors remained. This is the default model in `src/main.py` (`--model_name U2`). The training started on the Google Engine VM but progressed very slowly.
+<table>
+  <tr>
+    <td align="center"><img src="./doc/train_loss_unet.png" height="200"/><br/><sub>UNet — training loss</sub></td>
+    <td align="center"><img src="./doc/val_loss_unet.png" height="200"/><br/><sub>UNet — validation loss</sub></td>
+  </tr>
+</table>
+
+**2. U²-Net.** Switching to the U²-Net architecture (nested RSU blocks with deep supervision over 6 side outputs) produced a **dramatic improvement** over UNet. Object boundaries were far cleaner, though some segmentation errors remained. This is the default model in `src/main.py` (`--model_name U2`). Training ran on the Google Engine VM but progressed very slowly due to the model's depth. We monitored losses and output masks after each epoch and decided to stop at **10 epochs**: both training and validation losses were consistently decreasing and the output masks were already visibly better than UNet's, so continuing to a full run was not cost-effective. The training and validation losses are shown below:
+
+<table>
+  <tr>
+    <td align="center"><img src="./doc/train_loss_u2net.png" height="200"/><br/><sub>U²-Net — training loss</sub></td>
+    <td align="center"><img src="./doc/val_loss_u2net.png" height="200"/><br/><sub>U²-Net — validation loss</sub></td>
+  </tr>
+</table>
 
 **3. YOLO (Ultralytics YOLO26-seg).** With limited time and team resources, we fine-tuned YOLO26-seg on VizWiz (single class `salient_object`) for instance segmentation. Results were **cleaner** and more robust on our target images.
 
